@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  bot:
+    build: .
+    container_name: vpn_bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - dashboard
+    command: python -m bot.main
+
+  dashboard:
+    build: .
+    container_name: vpn_dashboard
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    command: python -m uvicorn dashboard.app:app --host 0.0.0.0 --port 8080
+
+volumes:
+  data:

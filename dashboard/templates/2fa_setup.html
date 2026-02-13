@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2FA Setup - Admin Panel</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 500px;
+            text-align: center;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+
+        .qr-code {
+            background: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            display: inline-block;
+            margin: 20px 0;
+        }
+
+        .qr-code img {
+            display: block;
+        }
+
+        .secret {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 18px;
+            letter-spacing: 2px;
+            margin: 20px 0;
+            word-break: break-all;
+        }
+
+        .instructions {
+            color: rgba(255, 255, 255, 0.7);
+            margin: 20px 0;
+            line-height: 1.6;
+        }
+
+        .warning {
+            background: rgba(255, 193, 7, 0.2);
+            border: 1px solid #ffc107;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+
+        a {
+            color: #667eea;
+            text-decoration: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🔐 Настройка 2FA</h1>
+
+        <p class="instructions">
+            Отсканируйте QR-код в Google Authenticator или введите секретный ключ вручную:
+        </p>
+
+        <div class="qr-code">
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={{ qr_uri | urlencode }}"
+                alt="QR Code">
+        </div>
+
+        <div class="secret">{{ secret }}</div>
+
+        <div class="warning">
+            ⚠️ <b>Важно!</b> Добавьте этот ключ в <code>.env</code>:<br><br>
+            <code>TOTP_SECRET={{ secret }}</code>
+        </div>
+
+        <p><a href="/dashboard">← Вернуться в Dashboard</a></p>
+    </div>
+</body>
+
+</html>

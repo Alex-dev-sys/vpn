@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ user.username or user.telegram_id }} - Admin Panel</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+
+        .navbar {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .navbar h1 {
+            font-size: 20px;
+        }
+
+        .nav-links a {
+            color: rgba(255, 255, 255, 0.7);
+            text-decoration: none;
+            margin-left: 25px;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover {
+            color: #fff;
+        }
+
+        .container {
+            padding: 30px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .user-header {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .user-info h2 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .user-meta {
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .user-meta span {
+            margin-right: 20px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .badge-success {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+
+        .badge-danger {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.3);
+            color: #ef4444;
+        }
+
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.5);
+        }
+
+        .btn-success {
+            background: rgba(16, 185, 129, 0.3);
+            color: #10b981;
+        }
+
+        .btn-success:hover {
+            background: rgba(16, 185, 129, 0.5);
+        }
+
+        .section {
+            margin-bottom: 30px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        th,
+        td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            font-size: 14px;
+        }
+
+        th {
+            background: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .empty {
+            color: rgba(255, 255, 255, 0.4);
+            text-align: center;
+            padding: 30px;
+        }
+
+        .key-url {
+            font-family: monospace;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        .back-link {
+            color: #667eea;
+            text-decoration: none;
+            margin-bottom: 20px;
+            display: inline-block;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+
+<body>
+    <nav class="navbar">
+        <h1>🛡️ Admin Dashboard</h1>
+        <div class="nav-links">
+            <a href="/dashboard">📊 Dashboard</a>
+            <a href="/users">👥 Users</a>
+            <a href="/orders">📋 Orders</a>
+            <a href="/logout">🚪 Logout</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <a href="/users" class="back-link">← Назад к списку</a>
+
+        <div class="user-header">
+            <div class="user-info">
+                <h2>{{ user.username or 'User' }}</h2>
+                <div class="user-meta">
+                    <span>🆔 {{ user.telegram_id }}</span>
+                    <span>💰 {{ "%.2f"|format(user.balance) }} TON</span>
+                    <span>📅 {{ user.created_at.strftime('%d.%m.%Y') if user.created_at else
+                        user.registration_date.strftime('%d.%m.%Y') }}</span>
+                </div>
+            </div>
+            <div>
+                {% if user.is_banned %}
+                <span class="badge badge-danger" style="margin-right: 15px;">🚫 Заблокирован</span>
+                <form action="/api/user/{{ user.id }}/unban" method="POST" style="display:inline;">
+                    <button type="submit" class="btn btn-success">✅ Разблокировать</button>
+                </form>
+                {% else %}
+                <span class="badge badge-success" style="margin-right: 15px;">✅ Активен</span>
+                <form action="/api/user/{{ user.id }}/ban" method="POST" style="display:inline;">
+                    <button type="submit" class="btn btn-danger">🚫 Заблокировать</button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- VPN Keys -->
+        <div class="section">
+            <h3 class="section-title">🔐 VPN Ключи</h3>
+            {% if vpn_keys %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Сервер</th>
+                        <th>До</th>
+                        <th>Статус</th>
+                        <th>Действие</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key in vpn_keys %}
+                    <tr>
+                        <td>{{ key.id }}</td>
+                        <td>{{ key.server_id }}</td>
+                        <td>{{ key.expires_at.strftime('%d.%m.%Y') if key.expires_at else '—' }}</td>
+                        <td>
+                            {% if key.is_active %}<span class="badge badge-success">Активен</span>
+                            {% else %}<span class="badge badge-danger">Отключён</span>{% endif %}
+                        </td>
+                        <td>
+                            {% if key.is_active %}
+                            <form action="/api/vpn/{{ key.id }}/revoke" method="POST" style="display:inline;">
+                                <button type="submit" class="btn btn-danger"
+                                    style="padding:5px 10px;font-size:12px;">Отозвать</button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty">Нет VPN ключей</div>
+            {% endif %}
+        </div>
+
+        <!-- DNS Accesses -->
+        <div class="section">
+            <h3 class="section-title">🌐 DNS Доступы</h3>
+            {% if dns_accesses %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>IP</th>
+                        <th>До</th>
+                        <th>Статус</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for dns in dns_accesses %}
+                    <tr>
+                        <td>{{ dns.id }}</td>
+                        <td>{{ dns.current_ip or '—' }}</td>
+                        <td>{{ dns.expires_at.strftime('%d.%m.%Y') if dns.expires_at else '—' }}</td>
+                        <td>{% if dns.is_active %}<span class="badge badge-success">Активен</span>
+                            {% else %}<span class="badge badge-danger">Истёк</span>{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty">Нет DNS доступов</div>
+            {% endif %}
+        </div>
+
+        <!-- P2P Orders -->
+        <div class="section">
+            <h3 class="section-title">💱 P2P Заказы</h3>
+            {% if p2p_orders %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>TON</th>
+                        <th>RUB</th>
+                        <th>Статус</th>
+                        <th>Дата</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in p2p_orders %}
+                    <tr>
+                        <td>{{ order.id }}</td>
+                        <td>{{ order.amount_ton }} TON</td>
+                        <td>{{ order.amount_rub }} ₽</td>
+                        <td>
+                            {% if order.status == 'completed' %}<span class="badge badge-success">✅</span>
+                            {% elif order.status == 'canceled' %}<span class="badge badge-danger">❌</span>
+                            {% else %}<span class="badge"
+                                style="background:rgba(245,158,11,0.2);color:#f59e0b;">⏳</span>{% endif %}
+                        </td>
+                        <td>{{ order.created_at.strftime('%d.%m %H:%M') }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty">Нет P2P заказов</div>
+            {% endif %}
+        </div>
+
+        <!-- Payments -->
+        <div class="section">
+            <h3 class="section-title">💳 Платежи VPN/DNS</h3>
+            {% if payments %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Код</th>
+                        <th>Продукт</th>
+                        <th>Сумма</th>
+                        <th>Статус</th>
+                        <th>Дата</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in payments %}
+                    <tr>
+                        <td><code>{{ p.payment_code }}</code></td>
+                        <td>{{ p.product_type }}</td>
+                        <td>{{ p.amount_ton }} TON</td>
+                        <td>{% if p.status == 'completed' %}<span class="badge badge-success">✅</span>
+                            {% else %}<span class="badge badge-danger">{{ p.status }}</span>{% endif %}</td>
+                        <td>{{ p.created_at.strftime('%d.%m %H:%M') }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty">Нет платежей</div>
+            {% endif %}
+        </div>
+    </div>
+</body>
+
+</html>

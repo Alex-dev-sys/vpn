@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Users - Admin Panel</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+
+        .navbar {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .navbar h1 {
+            font-size: 20px;
+        }
+
+        .nav-links a {
+            color: rgba(255, 255, 255, 0.7);
+            text-decoration: none;
+            margin-left: 25px;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover,
+        .nav-links a.active {
+            color: #fff;
+        }
+
+        .container {
+            padding: 30px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .section-title {
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        th,
+        td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        th {
+            background: rgba(255, 255, 255, 0.05);
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge-success {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+
+        .badge-danger {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .user-id {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 12px;
+        }
+
+        .btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.2s;
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.3);
+            color: #ef4444;
+        }
+
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.5);
+        }
+
+        .btn-success {
+            background: rgba(16, 185, 129, 0.3);
+            color: #10b981;
+        }
+
+        .btn-success:hover {
+            background: rgba(16, 185, 129, 0.5);
+        }
+
+        .btn-info {
+            background: rgba(59, 130, 246, 0.3);
+            color: #3b82f6;
+        }
+
+        .btn-info:hover {
+            background: rgba(59, 130, 246, 0.5);
+        }
+
+        .actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        a.user-link {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        a.user-link:hover {
+            text-decoration: underline;
+        }
+
+        .search-form {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+
+        .search-form input {
+            flex: 1;
+            max-width: 400px;
+            padding: 12px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+            font-size: 14px;
+        }
+
+        .search-form input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .search-form button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .clear-btn {
+            color: rgba(255, 255, 255, 0.5);
+            text-decoration: none;
+            padding: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <nav class="navbar">
+        <h1>🛡️ Admin Dashboard</h1>
+        <div class="nav-links">
+            <a href="/dashboard">📊 Dashboard</a>
+            <a href="/users" class="active">👥 Users</a>
+            <a href="/orders">📋 Orders</a>
+            <a href="/logout">🚪 Logout</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h2 class="section-title">👥 Пользователи</h2>
+
+        <form method="GET" action="/users" class="search-form">
+            <input type="text" name="q" placeholder="🔍 Поиск по username или telegram_id..." value="{{ query or '' }}">
+            <button type="submit">Найти</button>
+            {% if query %}<a href="/users" class="clear-btn">✕</a>{% endif %}
+        </form>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Telegram</th>
+                    <th>Username</th>
+                    <th>Баланс</th>
+                    <th>Статус</th>
+                    <th>Регистрация</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td>{{ user.id }}</td>
+                    <td><span class="user-id">{{ user.telegram_id }}</span></td>
+                    <td>
+                        <a href="/user/{{ user.id }}" class="user-link">{{ user.username or '—' }}</a>
+                    </td>
+                    <td>{{ "%.2f"|format(user.balance) }} TON</td>
+                    <td>
+                        {% if user.is_banned %}
+                        <span class="badge badge-danger">🚫 Заблокирован</span>
+                        {% else %}
+                        <span class="badge badge-success">✅ Активен</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ user.created_at.strftime('%d.%m.%Y %H:%M') if user.created_at else
+                        user.registration_date.strftime('%d.%m.%Y %H:%M') }}</td>
+                    <td class="actions">
+                        <a href="/user/{{ user.id }}" class="btn btn-info">👁 Профиль</a>
+                        {% if user.is_banned %}
+                        <form action="/api/user/{{ user.id }}/unban" method="POST" style="display:inline;">
+                            <button type="submit" class="btn btn-success">✅ Разбан</button>
+                        </form>
+                        {% else %}
+                        <form action="/api/user/{{ user.id }}/ban" method="POST" style="display:inline;">
+                            <button type="submit" class="btn btn-danger">🚫 Бан</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+
+</html>

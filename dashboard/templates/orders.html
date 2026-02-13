@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orders - Admin Panel</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+
+        .navbar {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .navbar h1 {
+            font-size: 20px;
+        }
+
+        .nav-links a {
+            color: rgba(255, 255, 255, 0.7);
+            text-decoration: none;
+            margin-left: 25px;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover,
+        .nav-links a.active {
+            color: #fff;
+        }
+
+        .container {
+            padding: 30px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .section-title {
+            font-size: 20px;
+            margin: 30px 0 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 30px;
+        }
+
+        th,
+        td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            font-size: 14px;
+        }
+
+        th {
+            background: rgba(255, 255, 255, 0.05);
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .badge-success {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+
+        .badge-warning {
+            background: rgba(245, 158, 11, 0.2);
+            color: #f59e0b;
+        }
+
+        .badge-danger {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .badge-info {
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
+        }
+
+        .wallet {
+            font-family: monospace;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .tx-link {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .tx-link:hover {
+            text-decoration: underline;
+        }
+
+        .btn {
+            padding: 5px 10px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+
+        .btn-success {
+            background: rgba(16, 185, 129, 0.3);
+            color: #10b981;
+        }
+
+        .btn-success:hover {
+            background: rgba(16, 185, 129, 0.5);
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.3);
+            color: #ef4444;
+        }
+
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.5);
+        }
+
+        .actions {
+            display: flex;
+            gap: 6px;
+        }
+    </style>
+</head>
+
+<body>
+    <nav class="navbar">
+        <h1>🛡️ Admin Dashboard</h1>
+        <div class="nav-links">
+            <a href="/dashboard">📊 Dashboard</a>
+            <a href="/users">👥 Users</a>
+            <a href="/orders" class="active">📋 Orders</a>
+            <a href="/logout">🚪 Logout</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h2 class="section-title">💱 P2P Заказы</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>TON</th>
+                    <th>RUB</th>
+                    <th>Кошелёк</th>
+                    <th>Статус</th>
+                    <th>TX</th>
+                    <th>Дата</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for order in p2p_orders %}
+                <tr>
+                    <td>{{ order.id }}</td>
+                    <td>{{ order.amount_ton }} TON</td>
+                    <td>{{ order.amount_rub }} ₽</td>
+                    <td class="wallet">{{ order.wallet_address[:16] }}...</td>
+                    <td>
+                        {% if order.status == 'completed' %}
+                        <span class="badge badge-success">✅ Выполнен</span>
+                        {% elif order.status == 'waiting_confirmation' %}
+                        <span class="badge badge-warning">⏳ Ожидает</span>
+                        {% elif order.status == 'canceled' %}
+                        <span class="badge badge-danger">❌ Отменён</span>
+                        {% else %}
+                        <span class="badge badge-info">📝 {{ order.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if order.tx_hash %}
+                        <a href="https://tonviewer.com/transaction/{{ order.tx_hash }}" target="_blank"
+                            class="tx-link">🔗</a>
+                        {% else %}
+                        —
+                        {% endif %}
+                    </td>
+                    <td>{{ order.created_at.strftime('%d.%m %H:%M') }}</td>
+                    <td class="actions">
+                        {% if order.status == 'waiting_confirmation' or order.status == 'pending' %}
+                        <form action="/api/p2p/{{ order.id }}/confirm" method="POST" style="display:inline;">
+                            <button type="submit" class="btn btn-success">✅ Подтвердить</button>
+                        </form>
+                        <form action="/api/p2p/{{ order.id }}/cancel" method="POST" style="display:inline;">
+                            <button type="submit" class="btn btn-danger">❌ Отмена</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <h2 class="section-title">💳 VPN/DNS Платежи</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Код</th>
+                    <th>Продукт</th>
+                    <th>Сумма</th>
+                    <th>Статус</th>
+                    <th>Дата</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for payment in payments %}
+                <tr>
+                    <td><code>{{ payment.payment_code }}</code></td>
+                    <td>
+                        {% if payment.product_type == 'vpn' %}🔐 VPN
+                        {% elif payment.product_type == 'dns' %}🌐 DNS
+                        {% else %}⭐ PRO{% endif %}
+                    </td>
+                    <td>{{ payment.amount_ton }} TON</td>
+                    <td>
+                        {% if payment.status == 'completed' %}
+                        <span class="badge badge-success">✅ Оплачен</span>
+                        {% elif payment.status == 'expired' %}
+                        <span class="badge badge-danger">⏰ Истёк</span>
+                        {% else %}
+                        <span class="badge badge-warning">⏳ Ожидает</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ payment.created_at.strftime('%d.%m %H:%M') }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+
+</html>
