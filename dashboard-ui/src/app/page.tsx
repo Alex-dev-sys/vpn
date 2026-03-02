@@ -2,24 +2,18 @@
 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import {
-  ArrowLeft,
-  CircleHelp,
+  BadgeHelp,
+  CircleUserRound,
   Copy,
-  Globe,
-  Headphones,
-  History,
-  MessageCircleMore,
-  Monitor,
-  Settings2,
-  Shield,
+  Headset,
+  House,
+  Link2,
+  Settings,
   Sparkles,
-  UserRound,
-  WalletCards,
   Zap,
 } from "lucide-react";
 
 type TabKey = "store" | "setup" | "profile" | "support";
-type DeviceKey = "ios" | "android" | "desktop";
 
 type BootstrapResponse = {
   user: {
@@ -79,14 +73,13 @@ const API_BASE =
 
 export default function Home() {
   const [tab, setTab] = useState<TabKey>("store");
-  const [device, setDevice] = useState<DeviceKey>("ios");
   const [tgId, setTgId] = useState<number>(2096689952);
   const [bootstrap, setBootstrap] = useState<BootstrapResponse | null>(null);
   const [faq, setFaq] = useState<FaqResponse["items"]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [paymentInfo, setPaymentInfo] = useState<PaymentResponse | null>(null);
-  const [paymentBusy, setPaymentBusy] = useState(false);
+  const [payment, setPayment] = useState<PaymentResponse | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const webApp = useMemo(
     () =>
@@ -112,15 +105,17 @@ export default function Home() {
           fetch(`${API_BASE}/api/mini/bootstrap?tg_id=${tgId}`),
           fetch(`${API_BASE}/api/mini/faq`),
         ]);
-        if (!bootstrapRes.ok) throw new Error("bootstrap_failed");
-        if (!faqRes.ok) throw new Error("faq_failed");
+
+        if (!bootstrapRes.ok || !faqRes.ok) {
+          throw new Error("api_failed");
+        }
 
         const bootstrapJson = (await bootstrapRes.json()) as BootstrapResponse;
         const faqJson = (await faqRes.json()) as FaqResponse;
         setBootstrap(bootstrapJson);
         setFaq(faqJson.items || []);
       } catch {
-        setError("Не удалось загрузить данные. Проверьте API.");
+        setError("Не удалось загрузить данные mini app. Проверьте API и домен.");
       } finally {
         setLoading(false);
       }
@@ -138,21 +133,22 @@ export default function Home() {
   };
 
   const createPayment = async (product: "vpn" | "dns" | "pro") => {
-    setPaymentBusy(true);
+    setBusy(true);
     try {
       const response = await fetch(`${API_BASE}/api/mini/create-payment`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tg_id: tgId, product }),
       });
+
       if (!response.ok) throw new Error("payment_failed");
       const data = (await response.json()) as PaymentResponse;
-      setPaymentInfo(data);
+      setPayment(data);
       openLink(data.ton_link);
     } catch {
-      setError("Ошибка создания платежа. Попробуйте снова.");
+      setError("Не удалось создать платеж. Попробуйте ещё раз.");
     } finally {
-      setPaymentBusy(false);
+      setBusy(false);
     }
   };
 
@@ -160,258 +156,253 @@ export default function Home() {
     try {
       await navigator.clipboard.writeText(value);
     } catch {
-      setError("Не удалось скопировать в буфер обмена.");
+      setError("Не получилось скопировать в буфер обмена.");
     }
   };
 
-  const activeVpnKey = bootstrap?.install.vpn_keys?.[0];
+  const activeVpn = bootstrap?.install.vpn_keys?.[0];
   const activeDns = bootstrap?.install.dns?.[0];
 
   return (
-    <main className="min-h-screen px-3 py-4 sm:px-6 sm:py-6">
-      <section className="phone-shell mx-auto min-h-[92vh] w-full max-w-md p-5 pb-28 sm:min-h-[820px]">
-        <header className="relative z-10 mb-6 flex items-center justify-between">
-          <button className="secondary inline-flex h-10 w-10 items-center justify-center">
-            {tab === "store" ? <Sparkles size={18} /> : <ArrowLeft size={18} />}
-          </button>
-          <div className="text-center">
-            <p className="accent-font text-[31px] font-semibold leading-[1] tracking-tight">DNS.VPN</p>
-            <p className="text-xs text-[var(--muted)]">мини-приложение</p>
+    <main className="min-h-screen px-3 py-4 sm:px-6">
+      <section className="app-shell mx-auto max-w-md">
+        <header className="mb-4 flex items-center justify-between">
+          <div>
+            <p className="brand-title">VibeVPN</p>
+            <p className="text-xs text-white/60">мини-приложение</p>
           </div>
-          <button className="secondary inline-flex h-10 w-10 items-center justify-center">
-            <MessageCircleMore size={18} />
+          <button
+            className="icon-btn"
+            onClick={() => {
+              if (bootstrap?.links.support) openLink(bootstrap.links.support);
+            }}
+          >
+            <Headset size={18} />
           </button>
         </header>
 
-        <div className="relative z-10 space-y-4">
-          {loading && <article className="glass p-4 text-sm text-[var(--muted)]">Загружаю данные...</article>}
-          {error && !loading && <article className="rounded-2xl border border-[var(--danger)]/30 bg-red-500/10 p-4 text-sm">{error}</article>}
+        {loading && <div className="panel p-4 text-sm text-white/70">Загрузка данных...</div>}
+        {error && !loading && <div className="error-panel mb-3">{error}</div>}
 
-          {bootstrap && tab === "store" && (
-            <div className="space-y-4">
-              <article className="glass reveal px-5 py-5">
-                <div className="mb-6 flex h-44 items-center justify-center">
-                  <div className="relative flex h-30 w-30 items-center justify-center rounded-full border border-white/10">
-                    <div className="absolute h-50 w-50 rounded-full border border-white/6" />
-                    <div className="absolute h-70 w-70 rounded-full border border-white/6" />
-                    <Shield className="text-white/90" size={66} />
+        {bootstrap && (
+          <div className="space-y-3 pb-22">
+            {tab === "store" && (
+              <>
+                <section className="panel hero-card">
+                  <div className="hero-meta">
+                    <span className={`status-dot ${bootstrap.status.state === "online" ? "status-online" : "status-offline"}`} />
+                    <span className="text-xs uppercase tracking-wide text-white/70">{bootstrap.status.state}</span>
                   </div>
-                </div>
-
-                <div className="mb-3 flex items-center justify-between">
-                  <div>
-                    <p className="text-3xl font-semibold leading-none">
-                      {bootstrap.status.active_until ? `до ${bootstrap.status.active_until}` : "нет подписки"}
-                    </p>
-                    <p className="mt-1 text-sm text-[var(--muted)]">{bootstrap.status.state}</p>
-                  </div>
-                  <span className="secondary px-4 py-2 text-sm">курс {bootstrap.prices.rate_rub_per_ton} ₽/TON</span>
-                </div>
-
-                <button
-                  disabled={paymentBusy}
-                  onClick={() => createPayment("pro")}
-                  className="cta mt-2 flex w-full items-center justify-between px-5 py-4 text-xl font-bold disabled:opacity-60"
-                >
-                  <span className="flex items-center gap-2">
-                    <Globe size={22} />
-                    Купить подписку
-                  </span>
-                  <span>от {Math.min(...bootstrap.prices.plans.map((p) => p.price_rub))} ₽</span>
-                </button>
-                <button onClick={() => openLink(bootstrap.links.p2p)} className="secondary mt-3 flex w-full items-center justify-center gap-2 px-5 py-3 text-lg">
-                  <Zap size={20} />
-                  Купить TON (P2P)
-                </button>
-              </article>
-
-              {paymentInfo && (
-                <article className="glass reveal p-4">
-                  <p className="mb-2 text-sm">
-                    Платеж <b>{paymentInfo.payment_code}</b> создан: {paymentInfo.amount_ton} TON (~{paymentInfo.amount_rub} ₽)
+                  <h1 className="text-3xl font-semibold leading-tight">
+                    {bootstrap.status.active_until ? `Доступ до ${bootstrap.status.active_until}` : "Подключите защиту в 1 тап"}
+                  </h1>
+                  <p className="text-sm text-white/70">
+                    VPN + DNS с реальными статусами, быстрым продлением и P2P покупкой TON.
                   </p>
-                  <div className="flex gap-2">
-                    <button onClick={() => openLink(paymentInfo.ton_link)} className="cta w-full px-3 py-2 text-sm font-semibold">
-                      Открыть оплату
+
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button disabled={busy} onClick={() => createPayment("pro")} className="primary-btn disabled:opacity-60">
+                      <Sparkles size={16} />
+                      Купить PRO
                     </button>
-                    <button onClick={() => openLink(paymentInfo.bot_check_link)} className="secondary w-full px-3 py-2 text-sm">
-                      Я оплатил
+                    <button onClick={() => openLink(bootstrap.links.p2p)} className="secondary-btn">
+                      <Zap size={16} />
+                      Купить TON
                     </button>
                   </div>
-                </article>
-              )}
+                  <p className="mt-2 text-xs text-white/60">Курс: {bootstrap.prices.rate_rub_per_ton} ₽ / TON</p>
+                </section>
 
-              <article className="glass reveal p-4">
-                <h3 className="mb-3 text-lg font-semibold">Наши продукты</h3>
-                <div className="space-y-3">
-                  {bootstrap.prices.plans.map((plan) => (
-                    <div key={plan.code} className="rounded-2xl border border-white/10 bg-black/15 p-3">
-                      <div className="mb-1 flex items-center justify-between">
-                        <p className="text-base font-semibold">{plan.title}</p>
-                        <button onClick={() => createPayment(plan.code)} className="secondary px-2 py-1 text-xs">
-                          Купить
-                        </button>
+                {payment && (
+                  <section className="panel">
+                    <p className="text-sm">
+                      Платеж <b>{payment.payment_code}</b>: {payment.amount_ton} TON (~{payment.amount_rub} ₽)
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <button className="primary-btn" onClick={() => openLink(payment.ton_link)}>
+                        Оплатить
+                      </button>
+                      <button className="secondary-btn" onClick={() => openLink(payment.bot_check_link)}>
+                        Я оплатил
+                      </button>
+                    </div>
+                  </section>
+                )}
+
+                <section className="panel">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h2 className="section-title">Тарифы</h2>
+                    <span className="text-xs text-white/50">реальные цены из API</span>
+                  </div>
+                  <div className="space-y-2">
+                    {bootstrap.prices.plans.map((plan) => (
+                      <div key={plan.code} className="plan-row">
+                        <div>
+                          <p className="font-medium">{plan.title}</p>
+                          <p className="text-xs text-white/60">{plan.subtitle}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="font-semibold">{plan.price_rub} ₽</p>
+                          <p className="text-xs text-white/60">{plan.price_ton} TON</p>
+                          <button className="mini-btn mt-1" onClick={() => createPayment(plan.code)}>
+                            Купить
+                          </button>
+                        </div>
                       </div>
-                      <p className="text-sm text-[var(--muted)]">{plan.subtitle}</p>
-                      <p className="mt-2 text-sm">
-                        <span className="font-semibold">{plan.price_rub} ₽</span> · {plan.price_ton} TON
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            </div>
-          )}
-
-          {bootstrap && tab === "setup" && (
-            <div className="space-y-4">
-              <article className="glass reveal p-5">
-                <h2 className="mb-1 text-5xl font-semibold">Настройка</h2>
-                <p className="text-sm text-[var(--muted)]">Подключение за 2 минуты. Deep link открывает установку прямо на устройстве.</p>
-                <div className="mt-5 flex gap-2">
-                  <button onClick={() => setDevice("ios")} className={`secondary px-3 py-2 text-sm ${device === "ios" ? "border-[var(--brand)] text-[var(--brand)]" : ""}`}>iOS</button>
-                  <button onClick={() => setDevice("android")} className={`secondary px-3 py-2 text-sm ${device === "android" ? "border-[var(--brand)] text-[var(--brand)]" : ""}`}>Android</button>
-                  <button onClick={() => setDevice("desktop")} className={`secondary px-3 py-2 text-sm ${device === "desktop" ? "border-[var(--brand)] text-[var(--brand)]" : ""}`}>Desktop</button>
-                </div>
-              </article>
-
-              <article className="glass reveal p-4">
-                <div className="space-y-3">
-                  <div className="rounded-2xl border border-white/10 bg-black/15 p-3 text-sm">
-                    <p className="font-semibold">VPN ключ</p>
-                    <p className="text-[var(--muted)]">{activeVpnKey ? `Активен до ${activeVpnKey.expires_at}` : "Активного VPN ключа пока нет"}</p>
+                    ))}
                   </div>
-                  <div className="rounded-2xl border border-white/10 bg-black/15 p-3 text-sm">
-                    <p className="font-semibold">DNS сервер</p>
-                    <p className="text-[var(--muted)]">{activeDns?.dns_server_ip || "Будет доступен после покупки DNS"}</p>
+                </section>
+              </>
+            )}
+
+            {tab === "setup" && (
+              <>
+                <section className="panel">
+                  <h2 className="section-title">Установка и настройка</h2>
+                  <p className="text-sm text-white/65">Подключение на текущем устройстве или перенос на другое.</p>
+                  <div className="mt-3 space-y-2">
+                    <StepRow n="1" text="Откройте ключ в 1 тап." />
+                    <StepRow n="2" text="Подтвердите импорт в VPN клиент." />
+                    <StepRow n="3" text="Проверьте статус на главной." />
                   </div>
-                </div>
-                <button
-                  onClick={() => (activeVpnKey ? openLink(activeVpnKey.access_url) : openLink(bootstrap.links.bot))}
-                  className="cta mt-4 w-full px-5 py-3 text-lg font-semibold"
-                >
-                  {activeVpnKey ? "Начать настройку на этом устройстве" : "Открыть бот и получить ключ"}
-                </button>
-                <button onClick={() => openLink(bootstrap.links.bot)} className="secondary mt-3 w-full px-5 py-3 text-lg">
-                  Установить на другом устройстве
-                </button>
-              </article>
-            </div>
-          )}
+                </section>
 
-          {bootstrap && tab === "profile" && (
-            <div className="space-y-4">
-              <article className="glass reveal p-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-orange-400 to-pink-500 text-lg font-bold">
-                      {(bootstrap.user.username?.[0] || "U").toUpperCase()}
-                    </div>
-                    <div>
-                      <p className="text-xl font-semibold">{bootstrap.user.username || "Пользователь"}</p>
-                      <p className="text-sm text-[var(--muted)]">id: {bootstrap.user.telegram_id}</p>
-                    </div>
+                <section className="panel">
+                  <div className="space-y-2 text-sm">
+                    <InfoRow title="VPN ключ" value={activeVpn ? `Активен до ${activeVpn.expires_at}` : "Пока не выдан"} />
+                    <InfoRow title="DNS сервер" value={activeDns?.dns_server_ip || "Будет после покупки DNS"} />
+                    <InfoRow title="Текущий IP" value={activeDns?.current_ip || "Не определён"} />
                   </div>
-                  <button onClick={() => copyText(bootstrap.user.ref_link)} className="secondary inline-flex h-10 w-10 items-center justify-center">
-                    <Copy size={18} />
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                      className="primary-btn"
+                      onClick={() => (activeVpn ? openLink(activeVpn.access_url) : openLink(bootstrap.links.bot))}
+                    >
+                      На этом устройстве
+                    </button>
+                    <button className="secondary-btn" onClick={() => openLink(bootstrap.links.bot)}>
+                      На другом устройстве
+                    </button>
+                  </div>
+                </section>
+              </>
+            )}
+
+            {tab === "profile" && (
+              <>
+                <section className="panel">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="avatar">{(bootstrap.user.username?.[0] || "U").toUpperCase()}</div>
+                      <div>
+                        <p className="font-semibold text-lg">{bootstrap.user.username || "Пользователь"}</p>
+                        <p className="text-xs text-white/60">id: {bootstrap.user.telegram_id}</p>
+                      </div>
+                    </div>
+                    <button className="icon-btn" onClick={() => copyText(bootstrap.user.ref_link)}>
+                      <Copy size={16} />
+                    </button>
+                  </div>
+                </section>
+
+                <section className="panel">
+                  <h2 className="section-title">Профиль и платежи</h2>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    <Metric title="Баланс" value={`${bootstrap.user.balance_ton} TON`} />
+                    <Metric title="Рефералы" value={`${bootstrap.user.referrals_count}`} />
+                    <Metric title="Статус" value={bootstrap.status.state} />
+                  </div>
+                  <div className="mt-3 ref-box">
+                    <Link2 size={14} />
+                    <span className="truncate">{bootstrap.user.ref_link}</span>
+                  </div>
+                </section>
+              </>
+            )}
+
+            {tab === "support" && (
+              <>
+                <section className="panel">
+                  <h2 className="section-title">Поддержка</h2>
+                  <p className="text-sm text-white/65">FAQ и быстрый переход в чат поддержки.</p>
+                  <button className="primary-btn mt-3 w-full" onClick={() => openLink(bootstrap.links.support)}>
+                    Написать в поддержку
                   </button>
-                </div>
-              </article>
+                </section>
 
-              <article className="glass reveal p-4">
-                <h3 className="mb-3 text-2xl font-semibold">Оплата</h3>
-                <div className="space-y-3 text-sm">
-                  <MenuLine icon={<WalletCards size={18} />} title="Способы оплаты" subtitle="TON / карта / SBP" />
-                  <MenuLine icon={<History size={18} />} title="История операций" subtitle={`Баланс: ${bootstrap.user.balance_ton} TON`} />
-                  <MenuLine icon={<Sparkles size={18} />} title="Реферальная программа" subtitle={`Приглашено: ${bootstrap.user.referrals_count}`} />
-                </div>
-              </article>
+                <section className="panel">
+                  <div className="space-y-2">
+                    {faq.map((item) => (
+                      <div key={item.q} className="faq-row">
+                        <div className="mt-0.5 text-emerald-300">
+                          <BadgeHelp size={16} />
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium">{item.q}</p>
+                          <p className="text-xs text-white/65">{item.a}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </>
+            )}
+          </div>
+        )}
 
-              <article className="glass reveal p-4">
-                <h3 className="mb-3 text-2xl font-semibold">Ваша ссылка</h3>
-                <div className="flex items-center justify-between rounded-2xl border border-white/12 bg-white/95 px-3 py-3 text-black">
-                  <span className="truncate text-base">{bootstrap.user.ref_link}</span>
-                  <button onClick={() => copyText(bootstrap.user.ref_link)}>
-                    <Copy size={18} />
-                  </button>
-                </div>
-              </article>
-            </div>
-          )}
-
-          {bootstrap && tab === "support" && (
-            <div className="space-y-4">
-              <article className="glass reveal p-5">
-                <Headphones size={34} className="mb-4 text-[var(--brand)]" />
-                <h2 className="mb-2 text-4xl font-semibold">Поддержка</h2>
-                <p className="text-sm text-[var(--muted)]">FAQ из API и моментальный переход в чат поддержки.</p>
-              </article>
-
-              <article className="glass reveal p-4">
-                <div className="space-y-3 text-sm">
-                  {faq.map((item) => (
-                    <MenuLine key={item.q} icon={<CircleHelp size={18} />} title={item.q} subtitle={item.a} />
-                  ))}
-                  <button onClick={() => openLink(bootstrap.links.support)} className="cta w-full px-4 py-3 text-sm font-semibold">
-                    Связаться с поддержкой
-                  </button>
-                </div>
-              </article>
-            </div>
-          )}
-        </div>
-
-        <nav className="glass absolute inset-x-4 bottom-4 z-20 flex items-center justify-around p-2">
-          <TabButton icon={<Shield size={20} />} label="Витрина" active={tab === "store"} onClick={() => setTab("store")} />
-          <TabButton icon={<Settings2 size={20} />} label="Настройка" active={tab === "setup"} onClick={() => setTab("setup")} />
-          <TabButton icon={<UserRound size={20} />} label="Профиль" active={tab === "profile"} onClick={() => setTab("profile")} />
-          <TabButton icon={<Monitor size={20} />} label="Поддержка" active={tab === "support"} onClick={() => setTab("support")} />
+        <nav className="bottom-nav">
+          <NavItem active={tab === "store"} onClick={() => setTab("store")} icon={<House size={18} />} label="Главная" />
+          <NavItem active={tab === "setup"} onClick={() => setTab("setup")} icon={<Settings size={18} />} label="Настройка" />
+          <NavItem active={tab === "profile"} onClick={() => setTab("profile")} icon={<CircleUserRound size={18} />} label="Профиль" />
+          <NavItem active={tab === "support"} onClick={() => setTab("support")} icon={<Headset size={18} />} label="Поддержка" />
         </nav>
       </section>
     </main>
   );
 }
 
-function TabButton({
-  icon,
-  label,
+function NavItem({
   active,
   onClick,
+  icon,
+  label,
 }: {
+  active: boolean;
+  onClick: () => void;
   icon: ReactNode;
   label: string;
-  active?: boolean;
-  onClick: () => void;
 }) {
   return (
-    <button
-      onClick={onClick}
-      className={`flex w-[23%] flex-col items-center gap-1 rounded-2xl px-2 py-2 text-[11px] transition ${
-        active ? "bg-[var(--brand)] text-[#032119]" : "text-[var(--muted)] hover:bg-white/5"
-      }`}
-    >
+    <button onClick={onClick} className={`nav-item ${active ? "nav-item-active" : ""}`}>
       {icon}
       <span>{label}</span>
     </button>
   );
 }
 
-function MenuLine({
-  icon,
-  title,
-  subtitle,
-}: {
-  icon: ReactNode;
-  title: string;
-  subtitle: string;
-}) {
+function StepRow({ n, text }: { n: string; text: string }) {
   return (
-    <div className="flex w-full items-start gap-3 rounded-2xl border border-white/10 bg-black/15 p-3 text-left">
-      <span className="secondary inline-flex h-9 w-9 items-center justify-center">{icon}</span>
-      <span>
-        <span className="block text-base font-semibold">{title}</span>
-        <span className="block text-sm text-[var(--muted)]">{subtitle}</span>
-      </span>
+    <div className="step-row">
+      <span className="step-badge">{n}</span>
+      <span className="text-sm">{text}</span>
+    </div>
+  );
+}
+
+function InfoRow({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="info-row">
+      <span className="text-white/70">{title}</span>
+      <span className="font-medium">{value}</span>
+    </div>
+  );
+}
+
+function Metric({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="metric">
+      <p className="text-[11px] uppercase tracking-wide text-white/55">{title}</p>
+      <p className="mt-1 text-sm font-semibold">{value}</p>
     </div>
   );
 }
