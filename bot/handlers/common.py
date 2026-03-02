@@ -68,12 +68,14 @@ async def cmd_start(message: types.Message, user: User, command: CommandStart, s
     rate_text = f"📊 Курс TON: <b>{rate:.2f} ₽</b>" if rate else "📊 Курс TON: н/д"
 
     text = (
-        f"👋 Привет, <b>{message.from_user.first_name}</b>!\n\n"
-        f"{rate_text}\n\n"
-        "Добро пожаловать в бот продажи VPN и DNS.\n\n"
-        "🔐 <b>VPN</b> — безлимитный доступ через Outline\n"
-        "🌐 <b>DNS</b> — приватный DNS с блокировкой рекламы\n\n"
-        "Выберите действие:"
+        "👋 <b>Первые 3 дня бесплатно для всех пользователей:</b>\n\n"
+        "1️⃣ Откройте приложение\n\n"
+        "2️⃣ Нажмите «Установка и настройка» и следуйте инструкции,\n"
+        "чтобы подключить устройство\n\n"
+        "3️⃣ Готово! Пользуйтесь бесплатно 3 дня\n\n"
+        "Возникли вопросы или сложности? Напишите в службу поддержки,\n"
+        "мы обязательно вам поможем 👨🏻‍💻\n\n"
+        f"{rate_text}"
     )
     await message.answer(text, reply_markup=main_menu_kb())
 

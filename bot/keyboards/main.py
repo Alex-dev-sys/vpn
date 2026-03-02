@@ -15,7 +15,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     # Mini App button only works with HTTPS URL
     if MINI_APP_URL.startswith("https://"):
         kb.append(
-            [InlineKeyboardButton(text="🚀 Открыть Mini App", web_app=WebAppInfo(url=MINI_APP_URL))]
+            [InlineKeyboardButton(text="📱 Открыть приложение", web_app=WebAppInfo(url=MINI_APP_URL))]
         )
 
     kb.extend(
