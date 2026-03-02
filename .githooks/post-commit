@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_DIR="$(git rev-parse --show-toplevel)"
+cd "$REPO_DIR"
+
+echo "🚀 post-commit: pushing to origin/main..."
+git push origin main
+
+echo "🚀 post-commit: deploying to production..."
+"$REPO_DIR/scripts/deploy_remote.sh"
+
+echo "✅ post-commit done"
