@@ -7,9 +7,10 @@ import secrets
 import bcrypt
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, func
@@ -19,6 +20,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()
 
 # Sentry
@@ -31,6 +33,7 @@ if SENTRY_DSN:
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bot.database.models import Base, User, Payment, VPNKey, DNSAccess, P2POrder, P2POrderStatus
+from bot.services.rate_service import get_ton_rub_rate
 
 # Database setup
 DATABASE_URL = "sqlite+aiosqlite:///data/bot.db"
@@ -60,6 +63,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Admin Dashboard", lifespan=lifespan)
 app.state.limiter = limiter
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Rate limit error handler
 @app.exception_handler(RateLimitExceeded)
@@ -504,6 +514,223 @@ async def user_detail(request: Request, user_id: int):
         "p2p_orders": p2p_orders,
         "payments": payments
     })
+
+
+# ============ MINI APP API ============
+
+TON_WALLET = os.getenv("TON_WALLET", "")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "dns_saler_bot")
+DNS_SERVER_IP = os.getenv("DNS_SERVER_IP", "")
+SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "dns_vpn_support")
+VPN_PRICE_RUB = int(os.getenv("VPN_PRICE_RUB", "150"))
+DNS_PRICE_RUB = int(os.getenv("DNS_PRICE_RUB", "100"))
+PRO_PRICE_RUB = int(os.getenv("PRO_PRICE_RUB", "200"))
+
+
+def _generate_payment_code() -> str:
+    chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    return "".join(secrets.choice(chars) for _ in range(8))
+
+
+def _ton_to_nanoton(amount: float) -> int:
+    return int(amount * 1_000_000_000)
+
+
+def _ton_link(wallet: str, amount_ton: float, comment: str) -> str:
+    nanotons = _ton_to_nanoton(amount_ton)
+    return f"https://app.tonkeeper.com/transfer/{wallet}?amount={nanotons}&text={quote(comment)}"
+
+
+async def _find_or_create_user(session: AsyncSession, tg_id: int) -> User:
+    result = await session.execute(select(User).where(User.telegram_id == tg_id))
+    user = result.scalar_one_or_none()
+    if user:
+        return user
+
+    user = User(telegram_id=tg_id, username=None)
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+@app.get("/api/mini/bootstrap")
+async def mini_bootstrap(tg_id: int):
+    """Mini app bootstrap data: profile, prices, active subscriptions, support info."""
+    async with async_session() as session:
+        user = await _find_or_create_user(session, tg_id)
+        now = datetime.now()
+
+        vpn_result = await session.execute(
+            select(VPNKey).where(
+                VPNKey.user_id == user.id,
+                VPNKey.is_active == True,
+                VPNKey.expires_at > now,
+            ).order_by(VPNKey.expires_at.desc())
+        )
+        dns_result = await session.execute(
+            select(DNSAccess).where(
+                DNSAccess.user_id == user.id,
+                DNSAccess.is_active == True,
+                DNSAccess.expires_at > now,
+            ).order_by(DNSAccess.expires_at.desc())
+        )
+        referrals_result = await session.execute(select(func.count(User.id)).where(User.referrer_id == user.id))
+        vpn_keys = vpn_result.scalars().all()
+        dns_accesses = dns_result.scalars().all()
+        referrals_count = referrals_result.scalar() or 0
+
+        rate = await get_ton_rub_rate()
+        if not rate or rate <= 0:
+            rate = 100.0
+
+        def plan_item(code: str, title: str, subtitle: str, price_rub: int):
+            return {
+                "code": code,
+                "title": title,
+                "subtitle": subtitle,
+                "price_rub": price_rub,
+                "price_ton": round(price_rub / rate, 2),
+            }
+
+        plans = [
+            plan_item("vpn", "VPN Start", "Стабильный Outline VPN на 30 дней", VPN_PRICE_RUB),
+            plan_item("dns", "DNS Shield", "Приватный DNS с блокировкой рекламы", DNS_PRICE_RUB),
+            plan_item("pro", "PRO Combo", "VPN + DNS + приоритетная поддержка", PRO_PRICE_RUB),
+        ]
+
+        ref_link = f"https://t.me/{BOT_USERNAME}?start={user.telegram_id}"
+        active_until = None
+        if vpn_keys or dns_accesses:
+            max_vpn = max([v.expires_at for v in vpn_keys], default=None)
+            max_dns = max([d.expires_at for d in dns_accesses], default=None)
+            active_until = max(x for x in [max_vpn, max_dns] if x is not None).strftime("%d.%m.%Y")
+
+        return JSONResponse(
+            {
+                "user": {
+                    "telegram_id": user.telegram_id,
+                    "username": user.username,
+                    "balance_ton": round(user.balance or 0.0, 2),
+                    "referrals_count": referrals_count,
+                    "ref_link": ref_link,
+                },
+                "status": {
+                    "vpn_active": len(vpn_keys) > 0,
+                    "dns_active": len(dns_accesses) > 0,
+                    "active_until": active_until,
+                    "state": "online" if (vpn_keys or dns_accesses) else "offline",
+                },
+                "prices": {
+                    "rate_rub_per_ton": round(rate, 2),
+                    "plans": plans,
+                },
+                "links": {
+                    "bot": f"https://t.me/{BOT_USERNAME}",
+                    "p2p": f"https://t.me/{BOT_USERNAME}?start=p2p",
+                    "support": f"https://t.me/{SUPPORT_USERNAME}",
+                },
+                "install": {
+                    "vpn_keys": [
+                        {
+                            "key_id": key.id,
+                            "access_url": key.access_url,
+                            "expires_at": key.expires_at.strftime("%d.%m.%Y"),
+                        }
+                        for key in vpn_keys
+                    ],
+                    "dns": [
+                        {
+                            "access_id": access.id,
+                            "dns_server_ip": DNS_SERVER_IP,
+                            "current_ip": access.current_ip,
+                            "expires_at": access.expires_at.strftime("%d.%m.%Y"),
+                        }
+                        for access in dns_accesses
+                    ],
+                },
+            }
+        )
+
+
+@app.post("/api/mini/create-payment")
+async def mini_create_payment(payload: dict):
+    """
+    Create payment for mini app checkout.
+    Body: { "tg_id": 123, "product": "vpn|dns|pro" }
+    """
+    tg_id = int(payload.get("tg_id", 0))
+    product = str(payload.get("product", "")).lower().strip()
+    if not tg_id or product not in {"vpn", "dns", "pro"}:
+        raise HTTPException(status_code=400, detail="Invalid tg_id or product")
+    if not TON_WALLET:
+        raise HTTPException(status_code=400, detail="TON wallet not configured")
+
+    async with async_session() as session:
+        user = await _find_or_create_user(session, tg_id)
+        rate = await get_ton_rub_rate()
+        if not rate or rate <= 0:
+            rate = 100.0
+
+        rub_prices = {"vpn": VPN_PRICE_RUB, "dns": DNS_PRICE_RUB, "pro": PRO_PRICE_RUB}
+        amount_rub = rub_prices[product]
+        amount_ton = round(amount_rub / rate, 2)
+
+        payment_code = _generate_payment_code()
+        for _ in range(10):
+            exists = await session.execute(select(Payment).where(Payment.payment_code == payment_code))
+            if not exists.scalar_one_or_none():
+                break
+            payment_code = _generate_payment_code()
+
+        payment = Payment(
+            user_id=user.id,
+            payment_code=payment_code,
+            product_type=product,
+            amount_ton=amount_ton,
+            status="pending",
+            expires_at=datetime.now() + timedelta(minutes=30),
+        )
+        session.add(payment)
+        await session.commit()
+
+        return JSONResponse(
+            {
+                "payment_code": payment.payment_code,
+                "amount_ton": amount_ton,
+                "amount_rub": amount_rub,
+                "expires_at": payment.expires_at.strftime("%d.%m.%Y %H:%M"),
+                "ton_link": _ton_link(TON_WALLET, amount_ton, payment.payment_code),
+                "bot_check_link": f"https://t.me/{BOT_USERNAME}?start=pay_{payment.payment_code}",
+            }
+        )
+
+
+@app.get("/api/mini/faq")
+async def mini_faq():
+    """Frequently asked questions for mini app support section."""
+    return JSONResponse(
+        {
+            "items": [
+                {
+                    "q": "Как быстро активируется подписка после оплаты?",
+                    "a": "Обычно в течение 1-2 минут после подтверждения платежа в боте.",
+                },
+                {
+                    "q": "Как установить VPN на другом устройстве?",
+                    "a": "Откройте mini app на новом устройстве и используйте раздел Настройка. Ключ можно установить по ссылке в 1 тап.",
+                },
+                {
+                    "q": "Как купить TON за рубли (P2P)?",
+                    "a": "Нажмите кнопку P2P в витрине. Бот проведет по шагам: сумма, адрес кошелька, перевод и подтверждение.",
+                },
+                {
+                    "q": "Куда писать, если не работает DNS/VPN?",
+                    "a": f"Свяжитесь с поддержкой: https://t.me/{SUPPORT_USERNAME}",
+                },
+            ]
+        }
+    )
 
 
 if __name__ == "__main__":
