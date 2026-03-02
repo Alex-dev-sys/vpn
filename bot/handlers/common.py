@@ -1,4 +1,5 @@
 from aiogram import F, Router, types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
@@ -96,7 +97,11 @@ async def cb_main_menu(callback: types.CallbackQuery, user: User):
         f"💰 Баланс: <b>{user.balance:.2f} TON</b>\n\n"
         "Выберите действие:"
     )
-    await callback.message.edit_text(text, reply_markup=main_menu_kb())
+    try:
+        await callback.message.edit_text(text, reply_markup=main_menu_kb())
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
     await callback.answer()
 
 
