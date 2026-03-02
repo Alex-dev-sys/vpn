@@ -3,6 +3,7 @@ TON Wallet service for sending transactions
 Uses pytoniq library for blockchain interaction
 """
 import logging
+import os
 import re
 from typing import Optional, Tuple
 from dataclasses import dataclass
@@ -28,14 +29,23 @@ class TransactionResult:
 class TONWallet:
     """TON Wallet for sending transactions"""
     
-    def __init__(self, mnemonics: str):
+    def __init__(
+        self,
+        mnemonics: str,
+        wallet_version: str = "v4r2",
+        network_global_id: int = -239,
+    ):
         """
         Initialize wallet from seed phrase
         
         Args:
             mnemonics: 24 words separated by spaces
+            wallet_version: wallet version (v4r2 or w5/v5)
+            network_global_id: TON network global id (-239 for mainnet)
         """
         self._mnemonics = mnemonics.split()
+        self._wallet_version = (wallet_version or "v4r2").lower()
+        self._network_global_id = network_global_id
         self._wallet = None
         self._address = None
         self._initialized = False
@@ -46,18 +56,26 @@ class TONWallet:
             return
         
         try:
-            from pytoniq import WalletV4R2, LiteBalancer
+            from pytoniq import WalletV4R2, WalletV5R1, LiteBalancer
             
             # Connect to mainnet
             provider = LiteBalancer.from_mainnet_config(trust_level=2)
             await provider.start_up()
             
-            # Create wallet from mnemonics
-            self._wallet = await WalletV4R2.from_mnemonic(provider, self._mnemonics)
+            # Create wallet from mnemonics (version-aware)
+            if self._wallet_version in {"w5", "v5", "v5r1", "walletv5"}:
+                self._wallet = await WalletV5R1.from_mnemonic(
+                    provider,
+                    self._mnemonics,
+                    network_global_id=self._network_global_id,
+                )
+            else:
+                self._wallet = await WalletV4R2.from_mnemonic(provider, self._mnemonics)
+
             self._address = self._wallet.address.to_str()
             self._initialized = True
             
-            logger.info(f"TON wallet initialized: {self._address[:20]}...")
+            logger.info(f"TON wallet initialized ({self._wallet_version}): {self._address[:20]}...")
             
         except ImportError:
             logger.error("pytoniq not installed! Run: pip install pytoniq")
@@ -169,7 +187,13 @@ async def get_wallet(mnemonics: str) -> TONWallet:
     global _wallet_instance
     
     if _wallet_instance is None:
-        _wallet_instance = TONWallet(mnemonics)
+        wallet_version = os.getenv("HOT_WALLET_VERSION", "v4r2")
+        network_global_id = int(os.getenv("TON_NETWORK_GLOBAL_ID", "-239"))
+        _wallet_instance = TONWallet(
+            mnemonics,
+            wallet_version=wallet_version,
+            network_global_id=network_global_id,
+        )
         await _wallet_instance.init()
     
     return _wallet_instance
