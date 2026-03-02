@@ -10,25 +10,18 @@ SUPPORT_URL = os.getenv("SUPPORT_URL", "https://t.me/your_support")
 
 
 def main_menu_kb() -> InlineKeyboardMarkup:
-    kb = []
-
-    # Mini App button only works with HTTPS URL
+    # Keep only one button to enter Mini App
     if MINI_APP_URL.startswith("https://"):
-        kb.append(
-            [InlineKeyboardButton(text="📱 Открыть приложение", web_app=WebAppInfo(url=MINI_APP_URL))]
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📱 Открыть приложение", web_app=WebAppInfo(url=MINI_APP_URL))]
+            ]
         )
 
-    kb.extend(
-        [
-            [InlineKeyboardButton(text="🛍 Купить подписку", callback_data="buy_menu")],
-            [InlineKeyboardButton(text="💎 Купить TON за RUB", callback_data="p2p_buy")],
-            [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile")],
-            [InlineKeyboardButton(text="🤝 Партнёрка", callback_data="partnership")],
-            [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="my_keys")],
-            [InlineKeyboardButton(text="🆘 Поддержка", url=SUPPORT_URL)],
-        ]
+    # Fallback single button if MINI_APP_URL is not configured correctly
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="📱 Mini App недоступен", callback_data="main_menu")]]
     )
-    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def buy_menu_kb() -> InlineKeyboardMarkup:
