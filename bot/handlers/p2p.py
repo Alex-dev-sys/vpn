@@ -29,6 +29,13 @@ HOT_WALLET_ADDRESS = os.getenv("HOT_WALLET_ADDRESS", "").strip()
 P2P_DAILY_LIMIT = int(os.getenv("P2P_DAILY_LIMIT", "50000"))  # RUB
 
 
+def _wallet_env() -> tuple[str, str]:
+    """Read wallet settings dynamically from env to avoid stale values."""
+    mnemonics = os.getenv("HOT_WALLET_MNEMONICS", HOT_WALLET_MNEMONICS).strip()
+    address = os.getenv("HOT_WALLET_ADDRESS", HOT_WALLET_ADDRESS).strip()
+    return mnemonics, address
+
+
 class P2PBuyStates(StatesGroup):
     """States for P2P buying"""
     amount = State()
@@ -65,17 +72,18 @@ def p2p_admin_order_kb(order_id: int) -> InlineKeyboardMarkup:
 
 def _wallet_matches_configured_address(wallet_address: str) -> bool:
     """Verify mnemonic-derived wallet address matches HOT_WALLET_ADDRESS."""
-    if not HOT_WALLET_ADDRESS:
+    _, configured_address = _wallet_env()
+    if not configured_address:
         return True
 
     derived = (wallet_address or "").strip()
-    if derived == HOT_WALLET_ADDRESS:
+    if derived == configured_address:
         return True
 
     try:
         from pytoniq import Address
         derived_raw = Address(derived).to_str(is_user_friendly=False)
-        configured_raw = Address(HOT_WALLET_ADDRESS).to_str(is_user_friendly=False)
+        configured_raw = Address(configured_address).to_str(is_user_friendly=False)
         return derived_raw == configured_raw
     except Exception:
         return False
@@ -101,12 +109,13 @@ async def cb_p2p_buy(callback: CallbackQuery, session: AsyncSession, user: User,
     
     # Get wallet balance for dynamic limit.
     # Do not fallback to static MAX_TON on errors, otherwise users see incorrect availability.
-    if not HOT_WALLET_MNEMONICS:
+    hot_wallet_mnemonics, _ = _wallet_env()
+    if not hot_wallet_mnemonics:
         await callback.answer("⚠️ Кошелек P2P не настроен. Обратитесь в поддержку.", show_alert=True)
         return
 
     try:
-        wallet = await get_wallet(HOT_WALLET_MNEMONICS)
+        wallet = await get_wallet(hot_wallet_mnemonics)
         if not _wallet_matches_configured_address(wallet.address or ""):
             logger.error(
                 "HOT_WALLET_ADDRESS mismatch during balance fetch: derived=%s configured=%s",
@@ -199,8 +208,9 @@ async def process_p2p_amount(message: Message, session: AsyncSession, user: User
 
     # Double check balance (just in case)
     try:
-        if HOT_WALLET_MNEMONICS:
-            wallet = await get_wallet(HOT_WALLET_MNEMONICS)
+        hot_wallet_mnemonics, _ = _wallet_env()
+        if hot_wallet_mnemonics:
+            wallet = await get_wallet(hot_wallet_mnemonics)
             if not _wallet_matches_configured_address(wallet.address or ""):
                 logger.error(
                     "HOT_WALLET_ADDRESS mismatch during amount check: derived=%s configured=%s",
@@ -364,7 +374,11 @@ async def admin_confirm_p2p(callback: CallbackQuery, session: AsyncSession, bot:
     await callback.answer("⏳ Отправляю TON...")
     
     try:
-        wallet = await get_wallet(HOT_WALLET_MNEMONICS)
+        hot_wallet_mnemonics, _ = _wallet_env()
+        if not hot_wallet_mnemonics:
+            await callback.message.edit_text("❌ Кошелек P2P не настроен (нет HOT_WALLET_MNEMONICS).")
+            return
+        wallet = await get_wallet(hot_wallet_mnemonics)
         if not _wallet_matches_configured_address(wallet.address or ""):
             logger.error(
                 "HOT_WALLET_ADDRESS mismatch during send: derived=%s configured=%s",
