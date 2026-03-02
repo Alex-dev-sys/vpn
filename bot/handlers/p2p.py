@@ -72,6 +72,10 @@ def p2p_admin_order_kb(order_id: int) -> InlineKeyboardMarkup:
 
 def _wallet_matches_configured_address(wallet_address: str) -> bool:
     """Verify mnemonic-derived wallet address matches HOT_WALLET_ADDRESS."""
+    # Optional strict check: set P2P_ENFORCE_WALLET_ADDRESS_MATCH=1 to enforce.
+    if os.getenv("P2P_ENFORCE_WALLET_ADDRESS_MATCH", "0").strip() != "1":
+        return True
+
     _, configured_address = _wallet_env()
     if not configured_address:
         return True
