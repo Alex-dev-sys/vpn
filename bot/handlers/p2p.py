@@ -25,6 +25,7 @@ ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 MIN_TON = float(os.getenv("MIN_TON", "1"))
 MAX_TON = float(os.getenv("MAX_TON", "100"))
 HOT_WALLET_MNEMONICS = os.getenv("HOT_WALLET_MNEMONICS", "")
+HOT_WALLET_ADDRESS = os.getenv("HOT_WALLET_ADDRESS", "").strip()
 P2P_DAILY_LIMIT = int(os.getenv("P2P_DAILY_LIMIT", "50000"))  # RUB
 
 
@@ -62,6 +63,24 @@ def p2p_admin_order_kb(order_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def _wallet_matches_configured_address(wallet_address: str) -> bool:
+    """Verify mnemonic-derived wallet address matches HOT_WALLET_ADDRESS."""
+    if not HOT_WALLET_ADDRESS:
+        return True
+
+    derived = (wallet_address or "").strip()
+    if derived == HOT_WALLET_ADDRESS:
+        return True
+
+    try:
+        from pytoniq import Address
+        derived_raw = Address(derived).to_str(is_user_friendly=False)
+        configured_raw = Address(HOT_WALLET_ADDRESS).to_str(is_user_friendly=False)
+        return derived_raw == configured_raw
+    except Exception:
+        return False
+
+
 # === User Handlers ===
 
 @router.callback_query(F.data == "p2p_buy")
@@ -80,15 +99,35 @@ async def cb_p2p_buy(callback: CallbackQuery, session: AsyncSession, user: User,
         await callback.answer(f"У вас уже есть активный заказ #{existing.id}", show_alert=True)
         return
     
-    # Get wallet balance for dynamic limit
-    max_available = MAX_TON
+    # Get wallet balance for dynamic limit.
+    # Do not fallback to static MAX_TON on errors, otherwise users see incorrect availability.
+    if not HOT_WALLET_MNEMONICS:
+        await callback.answer("⚠️ Кошелек P2P не настроен. Обратитесь в поддержку.", show_alert=True)
+        return
+
     try:
-        if HOT_WALLET_MNEMONICS:
-            wallet = await get_wallet(HOT_WALLET_MNEMONICS)
-            balance = await wallet.get_balance()
-            max_available = max(0.0, balance - 0.1)  # Reserve 0.1 TON for gas
+        wallet = await get_wallet(HOT_WALLET_MNEMONICS)
+        if not _wallet_matches_configured_address(wallet.address or ""):
+            logger.error(
+                "HOT_WALLET_ADDRESS mismatch during balance fetch: derived=%s configured=%s",
+                wallet.address,
+                HOT_WALLET_ADDRESS,
+            )
+            await callback.answer("⚠️ Ошибка настройки кошелька P2P. Обратитесь в поддержку.", show_alert=True)
+            return
+        balance = await wallet.get_balance()
+        max_available = max(0.0, balance - 0.1)  # Reserve 0.1 TON for gas
     except Exception as e:
         logger.error(f"Failed to get wallet balance: {e}")
+        await callback.answer("⚠️ Не удалось получить баланс кошелька. Попробуйте позже.", show_alert=True)
+        return
+
+    if max_available < MIN_TON:
+        await callback.answer(
+            f"⚠️ Недостаточно TON на кошельке для P2P (доступно: {max_available:.2f} TON).",
+            show_alert=True,
+        )
+        return
 
     await state.update_data(max_available=max_available)
     await state.set_state(P2PBuyStates.amount)
@@ -118,7 +157,7 @@ async def process_p2p_amount(message: Message, session: AsyncSession, user: User
     
     # Check against dynamic limit
     data = await state.get_data()
-    max_available = data.get("max_available", MAX_TON)
+    max_available = data.get("max_available", 0.0)
     
     if amount > max_available:
         await message.answer(f"❌ Максимум доступно: {max_available:.2f} TON")
@@ -162,6 +201,14 @@ async def process_p2p_amount(message: Message, session: AsyncSession, user: User
     try:
         if HOT_WALLET_MNEMONICS:
             wallet = await get_wallet(HOT_WALLET_MNEMONICS)
+            if not _wallet_matches_configured_address(wallet.address or ""):
+                logger.error(
+                    "HOT_WALLET_ADDRESS mismatch during amount check: derived=%s configured=%s",
+                    wallet.address,
+                    HOT_WALLET_ADDRESS,
+                )
+                await message.answer("⚠️ Ошибка настройки кошелька P2P. Обратитесь в поддержку.")
+                return
             balance = await wallet.get_balance()
             if balance < amount + 0.05:
                 await message.answer("⚠️ Баланс бота изменился. Попробуйте меньшую сумму.")
@@ -318,6 +365,14 @@ async def admin_confirm_p2p(callback: CallbackQuery, session: AsyncSession, bot:
     
     try:
         wallet = await get_wallet(HOT_WALLET_MNEMONICS)
+        if not _wallet_matches_configured_address(wallet.address or ""):
+            logger.error(
+                "HOT_WALLET_ADDRESS mismatch during send: derived=%s configured=%s",
+                wallet.address,
+                HOT_WALLET_ADDRESS,
+            )
+            await callback.message.edit_text("❌ Ошибка настройки кошелька P2P. Проверьте HOT_WALLET_ADDRESS.")
+            return
         tx_result = await wallet.send_ton(order.wallet_address, order.amount_ton)
         
         if tx_result.success:
