@@ -8,6 +8,8 @@ import re
 from typing import Optional, Tuple
 from dataclasses import dataclass
 
+import requests
+
 logger = logging.getLogger(__name__)
 
 
@@ -93,13 +95,36 @@ class TONWallet:
         """Get wallet balance in TON"""
         if not self._initialized:
             await self.init()
-        
+
         try:
             balance_nano = await self._wallet.get_balance()
             return balance_nano / 1_000_000_000
         except Exception as e:
-            logger.error(f"Failed to get balance: {e}")
-            return 0.0
+            logger.warning(f"Primary TON balance fetch failed, trying HTTP fallback: {e}")
+
+        # HTTP fallback (more stable than lite client in some environments)
+        try:
+            addr = self._address
+            r = requests.get(
+                "https://toncenter.com/api/v2/getAddressBalance",
+                params={"address": addr},
+                timeout=10,
+            )
+            data = r.json()
+            if r.ok and data.get("ok") and data.get("result") is not None:
+                return int(data["result"]) / 1_000_000_000
+        except Exception as e:
+            logger.warning(f"toncenter fallback failed: {e}")
+
+        try:
+            r = requests.get(f"https://tonapi.io/v2/accounts/{self._address}", timeout=10)
+            data = r.json()
+            if r.ok and data.get("balance") is not None:
+                return int(data["balance"]) / 1_000_000_000
+        except Exception as e:
+            logger.error(f"tonapi fallback failed: {e}")
+
+        raise RuntimeError("Failed to fetch TON balance from all providers")
     
     async def send_ton(self, to_address: str, amount: float, memo: str = "") -> TransactionResult:
         """
