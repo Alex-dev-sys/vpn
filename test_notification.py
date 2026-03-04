@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 import pytest
 
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///data/test_bot.db"
+
 # Mock bot instance before importing scheduler to avoid circular deps or init issues
 class DummyBot:
     async def send_message(self, chat_id, text, reply_markup=None):

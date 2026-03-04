@@ -20,7 +20,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from bot.database.models import User, Server, VPNKey, DNSAccess, Payment, PromoCode
 from bot.keyboards.main import back_to_main_kb, main_menu_kb
@@ -61,8 +61,8 @@ async def get_price_in_ton(product: str) -> tuple[float, float, int]:
     price_rub = PRICES_RUB[product]
     rate = await get_ton_rub_rate()
     
-    if not rate or rate == 0:
-        rate = 100  # Fallback rate if API fails
+    if not rate or rate <= 0:
+        raise RuntimeError("TON rate temporarily unavailable")
     
     price_ton = round(price_rub / rate, 2)
     return price_ton, rate, price_rub
@@ -70,6 +70,16 @@ async def get_price_in_ton(product: str) -> tuple[float, float, int]:
 
 def is_ton_wallet_configured() -> bool:
     return bool(TON_WALLET)
+
+
+async def try_mark_payment_processing(session: AsyncSession, payment_id: int, user_id: int) -> bool:
+    """Atomically switch payment status pending -> processing to avoid duplicate confirmations."""
+    result = await session.execute(
+        update(Payment)
+        .where(Payment.id == payment_id, Payment.user_id == user_id, Payment.status == "pending")
+        .values(status="processing")
+    )
+    return (result.rowcount or 0) == 1
 
 
 def generate_payment_code() -> str:
@@ -163,7 +173,11 @@ async def cb_buy_vpn(callback: types.CallbackQuery, session: AsyncSession, user:
         return
 
     await state.update_data(product="vpn")
-    price_ton, rate, price_rub = await get_price_in_ton("vpn")
+    try:
+        price_ton, rate, price_rub = await get_price_in_ton("vpn")
+    except RuntimeError:
+        await callback.answer("⚠️ Курс TON сейчас недоступен, попробуйте позже", show_alert=True)
+        return
     
     # Check for active promo
     data = await state.get_data()
@@ -209,7 +223,11 @@ async def cb_buy_dns(callback: types.CallbackQuery, session: AsyncSession, user:
         return
 
     await state.update_data(product="dns")
-    price_ton, rate, price_rub = await get_price_in_ton("dns")
+    try:
+        price_ton, rate, price_rub = await get_price_in_ton("dns")
+    except RuntimeError:
+        await callback.answer("⚠️ Курс TON сейчас недоступен, попробуйте позже", show_alert=True)
+        return
     
     # Check for active promo
     data = await state.get_data()
@@ -254,7 +272,11 @@ async def cb_buy_pro(callback: types.CallbackQuery, session: AsyncSession, user:
         return
 
     await state.update_data(product="pro")
-    price_ton, rate, price_rub = await get_price_in_ton("pro")
+    try:
+        price_ton, rate, price_rub = await get_price_in_ton("pro")
+    except RuntimeError:
+        await callback.answer("⚠️ Курс TON сейчас недоступен, попробуйте позже", show_alert=True)
+        return
     
     # Check for active promo
     data = await state.get_data()
@@ -362,6 +384,9 @@ async def cb_pay_balance(callback: types.CallbackQuery, session: AsyncSession, u
     if payment.status == "completed":
         await callback.answer("✅ Платёж уже обработан", show_alert=True)
         return
+    if payment.status == "processing":
+        await callback.answer("⏳ Платёж уже подтверждается, подождите", show_alert=True)
+        return
 
     # Check balance again
     if user.balance < payment.amount_ton:
@@ -407,6 +432,12 @@ async def cb_check_payment(callback: types.CallbackQuery, session: AsyncSession,
         await session.commit()
         await callback.answer("❌ Время платежа истекло. Создайте новый.", show_alert=True)
         return
+
+    locked = await try_mark_payment_processing(session, payment.id, user.id)
+    await session.commit()
+    if not locked:
+        await callback.answer("⏳ Платёж уже обрабатывается в другом запросе", show_alert=True)
+        return
     
     # --- ПРОВЕРКА ПЛАТЕЖА ЧЕРЕЗ TON API ---
     await callback.answer("🔍 Проверяю платёж...")
@@ -419,6 +450,8 @@ async def cb_check_payment(callback: types.CallbackQuery, session: AsyncSession,
     )
     
     if not payment_verified:
+        payment.status = "pending"
+        await session.commit()
         await callback.message.edit_text(
             f"❌ <b>Платёж не найден</b>\n\n"
             f"Убедитесь что:\n"

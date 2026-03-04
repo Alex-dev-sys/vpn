@@ -78,6 +78,7 @@ pip install -r requirements.txt
 BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
 ADMIN_IDS=123456789
 DASHBOARD_PASSWORD=CHANGE_ME_STRONG
+DATABASE_URL=sqlite+aiosqlite:///data/bot.db
 
 TON_WALLET=YOUR_TON_WALLET
 HOT_WALLET_MNEMONICS=...
@@ -94,6 +95,9 @@ SUPPORT_USERNAME=your_support_username
 MINI_APP_URL=https://your-domain.com
 CORS_ORIGINS=https://your-domain.com
 MINI_APP_STRICT_AUTH=1
+SESSION_TTL_SECONDS=43200
+COOKIE_SECURE=1
+COOKIE_SAMESITE=lax
 ```
 
 ### 3. Запуск бота
@@ -153,6 +157,13 @@ npm run build
 ### Проверка Python-файлов
 ```bash
 python -m py_compile dashboard/app.py bot/handlers/common.py
+python -m pytest
+```
+
+### Healthcheck
+```bash
+curl http://127.0.0.1:8080/health/live
+curl http://127.0.0.1:8080/health/ready
 ```
 
 ---

@@ -6,7 +6,7 @@ from bot.database.models import Base
 # Ensure the data directory exists
 os.makedirs("data", exist_ok=True)
 
-DATABASE_URL = "sqlite+aiosqlite:///data/bot.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///data/bot.db")
 
 engine: AsyncEngine = create_async_engine(DATABASE_URL, echo=False)
 

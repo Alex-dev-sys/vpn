@@ -311,6 +311,28 @@ body {
   font-weight: 700;
 }
 
+.payment-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.payment-step {
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(7, 24, 34, 0.42);
+  color: rgba(240, 249, 255, 0.72);
+  font-size: 11px;
+  text-align: center;
+  padding: 6px 4px;
+}
+
+.payment-step-active {
+  border-color: rgba(61, 224, 193, 0.5);
+  color: #d9fff7;
+  background: linear-gradient(135deg, rgba(61, 224, 193, 0.28), rgba(123, 233, 255, 0.2));
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }
@@ -331,5 +353,9 @@ body {
 
   .hero-stats {
     grid-template-columns: 1fr;
+  }
+
+  .payment-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

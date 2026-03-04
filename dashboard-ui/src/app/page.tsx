@@ -54,6 +54,11 @@ type BootstrapResponse = {
 };
 
 type FaqResponse = { items: Array<{ q: string; a: string }> };
+type AuthFallback = {
+  title: string;
+  description: string;
+  bot_link: string;
+};
 type PaymentResponse = {
   payment_code: string;
   amount_ton: number;
@@ -61,6 +66,14 @@ type PaymentResponse = {
   expires_at: string;
   ton_link: string;
   bot_check_link: string;
+};
+type PaymentStage = "created" | "paid" | "confirmed" | "key_issued" | "expired";
+type PaymentStatusResponse = {
+  payment_code: string;
+  status: string;
+  stage: PaymentStage;
+  is_final: boolean;
+  expires_at: string;
 };
 
 type TelegramWebApp = {
@@ -84,8 +97,10 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [payment, setPayment] = useState<PaymentResponse | null>(null);
+  const [paymentStage, setPaymentStage] = useState<PaymentStage>("created");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [authFallback, setAuthFallback] = useState<AuthFallback | null>(null);
 
   const webApp = useMemo(
     () =>
@@ -107,6 +122,8 @@ export default function Home() {
     const load = async () => {
       setLoading(true);
       setError(null);
+      setAuthFallback(null);
+      let authFailed = false;
       try {
         const [bootstrapRes, faqRes] = await Promise.all([
           fetch(
@@ -117,6 +134,14 @@ export default function Home() {
           fetch(`${API_BASE}/api/mini/faq`),
         ]);
 
+        if (!bootstrapRes.ok) {
+          const bootstrapError = await bootstrapRes.json().catch(() => null);
+          if (bootstrapError?.fallback) {
+            setAuthFallback(bootstrapError.fallback as AuthFallback);
+            authFailed = true;
+            throw new Error("auth_failed");
+          }
+        }
         if (!bootstrapRes.ok || !faqRes.ok) {
           throw new Error("api_failed");
         }
@@ -126,7 +151,9 @@ export default function Home() {
         setBootstrap(bootstrapJson);
         setFaq(faqJson.items || []);
       } catch {
-        setError("Не удалось загрузить данные mini app. Проверьте API и домен.");
+        if (!authFailed) {
+          setError("Не удалось загрузить данные mini app. Проверьте API и домен.");
+        }
       } finally {
         setLoading(false);
       }
@@ -150,12 +177,18 @@ export default function Home() {
       const response = await fetch(`${API_BASE}/api/mini/create-payment`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tg_id: tgId, product, init_data: initData }),
+        body: JSON.stringify({
+          tg_id: tgId,
+          product,
+          init_data: initData,
+          idempotency_key: `${product}-${tgId}`,
+        }),
       });
 
       if (!response.ok) throw new Error("payment_failed");
       const data = (await response.json()) as PaymentResponse;
       setPayment(data);
+      setPaymentStage("created");
       setNotice(`Платёж ${data.payment_code} создан. Проверьте кошелёк и подтвердите оплату.`);
       openLink(data.ton_link);
     } catch {
@@ -175,6 +208,42 @@ export default function Home() {
   };
 
   const statusLabel = bootstrap?.status.state === "online" ? "Защита активна" : "Нет активной защиты";
+  const stageLabels: Record<PaymentStage, string> = {
+    created: "Создано",
+    paid: "Оплачено",
+    confirmed: "Подтверждено",
+    key_issued: "Ключ выдан",
+    expired: "Истекло",
+  };
+
+  useEffect(() => {
+    if (!payment?.payment_code) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/mini/payment-status?tg_id=${tgId}&payment_code=${encodeURIComponent(payment.payment_code)}${
+            initData ? `&init_data=${encodeURIComponent(initData)}` : ""
+          }`
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as PaymentStatusResponse;
+        if (cancelled) return;
+        setPaymentStage(data.stage);
+        if (data.stage === "key_issued") {
+          setNotice("Платёж подтвержден, доступ выдан. Проверьте вкладку «Настройка».");
+        }
+      } catch {
+        // keep silent; polling is best-effort
+      }
+    };
+    void poll();
+    const timer = window.setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [payment?.payment_code, tgId, initData]);
 
   const activeVpn = bootstrap?.install.vpn_keys?.[0];
   const activeDns = bootstrap?.install.dns?.[0];
@@ -198,6 +267,15 @@ export default function Home() {
         </header>
 
         {loading && <div className="panel p-4 text-sm text-white/70">Загрузка данных...</div>}
+        {authFallback && !loading && (
+          <div className="panel mb-3">
+            <h2 className="section-title">{authFallback.title}</h2>
+            <p className="mt-1 text-sm text-white/70">{authFallback.description}</p>
+            <button className="primary-btn mt-3 w-full" onClick={() => openLink(authFallback.bot_link)}>
+              Открыть бота
+            </button>
+          </div>
+        )}
         {error && !loading && <div className="error-panel mb-3">{error}</div>}
         {notice && !loading && <div className="notice-panel mb-3">{notice}</div>}
 
@@ -255,11 +333,30 @@ export default function Home() {
                       </button>
                     </div>
                     <p className="text-xs text-white/60">Истекает: {payment.expires_at}</p>
+                    <div className="payment-steps mt-2">
+                      {(["created", "paid", "confirmed", "key_issued"] as PaymentStage[]).map((stage) => {
+                        const activeOrder = ["created", "paid", "confirmed", "key_issued"];
+                        const currentIdx = activeOrder.indexOf(paymentStage);
+                        const stepIdx = activeOrder.indexOf(stage);
+                        const active = currentIdx >= stepIdx && paymentStage !== "expired";
+                        return (
+                          <div key={stage} className={`payment-step ${active ? "payment-step-active" : ""}`}>
+                            {stageLabels[stage]}
+                          </div>
+                        );
+                      })}
+                    </div>
                     <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                       <button className="primary-btn" onClick={() => openLink(payment.ton_link)}>
                         Оплатить в Tonkeeper
                       </button>
-                      <button className="secondary-btn" onClick={() => openLink(payment.bot_check_link)}>
+                      <button
+                        className="secondary-btn"
+                        onClick={() => {
+                          setPaymentStage("paid");
+                          openLink(payment.bot_check_link);
+                        }}
+                      >
                         Я оплатил
                       </button>
                     </div>

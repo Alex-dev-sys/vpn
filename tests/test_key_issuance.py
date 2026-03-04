@@ -1,7 +1,10 @@
 from datetime import datetime, timedelta
+import os
 
 import pytest
 from sqlalchemy import select
+
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///data/test_bot.db"
 
 from bot.database.core import async_session_factory, init_db
 from bot.database.models import Payment, Server, User, VPNKey

@@ -9,7 +9,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from bot.database.models import User, P2POrder, P2POrderStatus
 from bot.keyboards.main import back_to_main_kb
@@ -371,8 +371,21 @@ async def admin_confirm_p2p(callback: CallbackQuery, session: AsyncSession, bot:
     result = await session.execute(select(P2POrder).where(P2POrder.id == order_id))
     order = result.scalar_one_or_none()
     
-    if not order or order.status != P2POrderStatus.WAITING_CONFIRMATION.value:
+    if not order or order.status not in {P2POrderStatus.WAITING_CONFIRMATION.value, "processing"}:
         await callback.answer("❌ Заказ не найден или уже обработан", show_alert=True)
+        return
+    if order.status == "processing":
+        await callback.answer("⏳ Заказ уже обрабатывается", show_alert=True)
+        return
+
+    lock_result = await session.execute(
+        update(P2POrder)
+        .where(P2POrder.id == order_id, P2POrder.status == P2POrderStatus.WAITING_CONFIRMATION.value)
+        .values(status="processing")
+    )
+    await session.commit()
+    if (lock_result.rowcount or 0) == 0:
+        await callback.answer("⏳ Заказ уже обрабатывается", show_alert=True)
         return
     
     await callback.answer("⏳ Отправляю TON...")
@@ -416,9 +429,13 @@ async def admin_confirm_p2p(callback: CallbackQuery, session: AsyncSession, bot:
                     f"🔗 <a href='https://tonviewer.com/transaction/{tx_result.tx_hash}'>Проверить</a>"
                 )
         else:
+            order.status = P2POrderStatus.WAITING_CONFIRMATION.value
+            await session.commit()
             await callback.message.edit_text(f"❌ Ошибка: {tx_result.error}")
     except Exception as e:
         logger.error(f"P2P send failed: {e}")
+        order.status = P2POrderStatus.WAITING_CONFIRMATION.value
+        await session.commit()
         await callback.message.edit_text(f"❌ Ошибка: {e}")
 
 

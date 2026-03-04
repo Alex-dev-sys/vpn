@@ -8,6 +8,7 @@ import bcrypt
 import hashlib
 import hmac
 import json
+import aiohttp
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from urllib.parse import quote, parse_qsl
@@ -16,7 +17,7 @@ from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from slowapi import Limiter
@@ -35,11 +36,11 @@ if SENTRY_DSN:
 # Import models
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from bot.database.models import Base, User, Payment, VPNKey, DNSAccess, P2POrder, P2POrderStatus
+from bot.database.models import Base, User, Payment, VPNKey, DNSAccess, P2POrder, P2POrderStatus, Server
 from bot.services.rate_service import get_ton_rub_rate
 
 # Database setup
-DATABASE_URL = "sqlite+aiosqlite:///data/bot.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///data/bot.db")
 engine = create_async_engine(DATABASE_URL, echo=False)
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -57,8 +58,7 @@ else:
 def verify_password(password: str) -> bool:
     return bcrypt.checkpw(password.encode(), ADMIN_PASSWORD_HASH)
 
-# Session storage (simple in-memory with TTL)
-sessions = {}
+# Session storage in DB table
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "43200"))  # 12h
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "1").strip() == "1"
 COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax").strip().lower()
@@ -70,6 +70,18 @@ limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Keep dashboard sessions persistent across process restarts.
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS admin_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    expires_at TEXT NOT NULL
+                )
+                """
+            )
+        )
     yield
 
 app = FastAPI(title="Admin Dashboard", lifespan=lifespan)
@@ -108,26 +120,70 @@ async def ip_whitelist_middleware(request: Request, call_next):
         # Allow localhost variations
         if client_ip not in allowed_ip_list and client_ip not in ["127.0.0.1", "::1", "localhost"]:
             return HTMLResponse("🚫 Access denied. Your IP is not whitelisted.", status_code=403)
-    return await call_next(request)
+    response = await call_next(request)
+    # Security headers for admin panel and mini API responses.
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "img-src 'self' data: https:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "connect-src 'self' https:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+    return response
 
 
-def check_auth(request: Request) -> bool:
+async def _create_session(session_id: str, expires_at: datetime):
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("INSERT OR REPLACE INTO admin_sessions(session_id, expires_at) VALUES (:sid, :exp)"),
+            {"sid": session_id, "exp": expires_at.isoformat()},
+        )
+
+
+async def _delete_session(session_id: str):
+    async with engine.begin() as conn:
+        await conn.execute(text("DELETE FROM admin_sessions WHERE session_id = :sid"), {"sid": session_id})
+
+
+async def _session_valid(session_id: str) -> bool:
+    async with engine.begin() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT expires_at FROM admin_sessions WHERE session_id = :sid"),
+                {"sid": session_id},
+            )
+        ).first()
+        if not row:
+            return False
+        try:
+            expires_at = datetime.fromisoformat(row[0])
+        except Exception:
+            await conn.execute(text("DELETE FROM admin_sessions WHERE session_id = :sid"), {"sid": session_id})
+            return False
+        if datetime.now() > expires_at:
+            await conn.execute(text("DELETE FROM admin_sessions WHERE session_id = :sid"), {"sid": session_id})
+            return False
+    return True
+
+
+async def check_auth(request: Request) -> bool:
     """Check if user is authenticated"""
     session_id = request.cookies.get("session_id")
     if not session_id:
         return False
-    expires_at = sessions.get(session_id)
-    if not expires_at:
-        return False
-    if datetime.now() > expires_at:
-        sessions.pop(session_id, None)
-        return False
-    return True
+    return await _session_valid(session_id)
 
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    if not check_auth(request):
+    if not await check_auth(request):
         return RedirectResponse("/login")
     return RedirectResponse("/dashboard")
 
@@ -160,7 +216,7 @@ async def login(request: Request, password: str = Form(...), totp_code: str = Fo
         return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный 2FA код", "show_2fa": True})
     
     session_id = secrets.token_hex(16)
-    sessions[session_id] = datetime.now() + timedelta(seconds=SESSION_TTL_SECONDS)
+    await _create_session(session_id, datetime.now() + timedelta(seconds=SESSION_TTL_SECONDS))
     response = RedirectResponse("/dashboard", status_code=302)
     response.set_cookie(
         "session_id",
@@ -176,7 +232,7 @@ async def login(request: Request, password: str = Form(...), totp_code: str = Fo
 @app.get("/2fa/setup", response_class=HTMLResponse)
 async def setup_2fa(request: Request):
     """Generate new 2FA secret and QR code"""
-    if not check_auth(request):
+    if not await check_auth(request):
         return RedirectResponse("/login")
     
     new_secret = pyotp.random_base32()
@@ -193,8 +249,8 @@ async def setup_2fa(request: Request):
 @app.get("/logout")
 async def logout(request: Request):
     session_id = request.cookies.get("session_id")
-    if session_id in sessions:
-        del sessions[session_id]
+    if session_id:
+        await _delete_session(session_id)
     response = RedirectResponse("/login")
     response.delete_cookie("session_id")
     return response
@@ -202,7 +258,7 @@ async def logout(request: Request):
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    if not check_auth(request):
+    if not await check_auth(request):
         return RedirectResponse("/login")
     
     async with async_session() as session:
@@ -275,7 +331,7 @@ async def dashboard(request: Request):
 
 @app.get("/users", response_class=HTMLResponse)
 async def users_page(request: Request, q: str = ""):
-    if not check_auth(request):
+    if not await check_auth(request):
         return RedirectResponse("/login")
     
     async with async_session() as session:
@@ -299,7 +355,7 @@ async def users_page(request: Request, q: str = ""):
 @app.get("/logs", response_class=HTMLResponse)
 async def audit_logs_page(request: Request):
     """View audit logs"""
-    if not check_auth(request):
+    if not await check_auth(request):
         return RedirectResponse("/login")
     
     async with async_session() as session:
@@ -313,7 +369,7 @@ async def audit_logs_page(request: Request):
 
 @app.get("/orders", response_class=HTMLResponse)
 async def orders_page(request: Request):
-    if not check_auth(request):
+    if not await check_auth(request):
         return RedirectResponse("/login")
     
     async with async_session() as session:
@@ -341,7 +397,7 @@ async def orders_page(request: Request):
 @app.get("/api/stats/chart")
 async def chart_data(request: Request):
     """Get chart data for last 30 days"""
-    if not check_auth(request):
+    if not await check_auth(request):
         raise HTTPException(status_code=401)
     
     from datetime import date
@@ -397,7 +453,7 @@ async def log_action(session: AsyncSession, action: str, target_type: str, targe
 @app.post("/api/user/{user_id}/ban")
 async def ban_user(request: Request, user_id: int):
     """Ban a user"""
-    if not check_auth(request):
+    if not await check_auth(request):
         raise HTTPException(status_code=401)
     
     async with async_session() as session:
@@ -416,7 +472,7 @@ async def ban_user(request: Request, user_id: int):
 @app.post("/api/user/{user_id}/unban")
 async def unban_user(request: Request, user_id: int):
     """Unban a user"""
-    if not check_auth(request):
+    if not await check_auth(request):
         raise HTTPException(status_code=401)
     
     async with async_session() as session:
@@ -435,7 +491,7 @@ async def unban_user(request: Request, user_id: int):
 @app.post("/api/p2p/{order_id}/confirm")
 async def confirm_p2p_order(request: Request, order_id: int):
     """Confirm P2P order and send TON"""
-    if not check_auth(request):
+    if not await check_auth(request):
         raise HTTPException(status_code=401)
     
     async with async_session() as session:
@@ -462,7 +518,7 @@ async def confirm_p2p_order(request: Request, order_id: int):
 @app.post("/api/p2p/{order_id}/cancel")
 async def cancel_p2p_order(request: Request, order_id: int, reason: str = Form("")):
     """Cancel P2P order"""
-    if not check_auth(request):
+    if not await check_auth(request):
         raise HTTPException(status_code=401)
     
     async with async_session() as session:
@@ -482,7 +538,7 @@ async def cancel_p2p_order(request: Request, order_id: int, reason: str = Form("
 @app.post("/api/vpn/{key_id}/revoke")
 async def revoke_vpn_key(request: Request, key_id: int):
     """Revoke VPN key"""
-    if not check_auth(request):
+    if not await check_auth(request):
         raise HTTPException(status_code=401)
     
     async with async_session() as session:
@@ -500,7 +556,7 @@ async def revoke_vpn_key(request: Request, key_id: int):
 @app.get("/user/{user_id}", response_class=HTMLResponse)
 async def user_detail(request: Request, user_id: int):
     """User detail page"""
-    if not check_auth(request):
+    if not await check_auth(request):
         return RedirectResponse("/login")
     
     async with async_session() as session:
@@ -553,7 +609,7 @@ VPN_PRICE_RUB = int(os.getenv("VPN_PRICE_RUB", "150"))
 DNS_PRICE_RUB = int(os.getenv("DNS_PRICE_RUB", "100"))
 PRO_PRICE_RUB = int(os.getenv("PRO_PRICE_RUB", "200"))
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-MINI_APP_STRICT_AUTH = os.getenv("MINI_APP_STRICT_AUTH", "0").strip() == "1"
+MINI_APP_STRICT_AUTH = os.getenv("MINI_APP_STRICT_AUTH", "1").strip() == "1"
 TELEGRAM_INITDATA_MAX_AGE = int(os.getenv("TELEGRAM_INITDATA_MAX_AGE", "86400"))
 
 
@@ -624,6 +680,39 @@ def _verify_mini_auth(tg_id: int, init_data: str | None):
         raise HTTPException(status_code=401, detail="tg_id mismatch")
 
 
+def _mini_error_response(message: str, status_code: int = 401):
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": "auth_failed",
+            "message": message,
+            "fallback": {
+                "title": "Откройте Mini App через Telegram",
+                "description": "Сессия Mini App не подтверждена. Вернитесь в бота и откройте приложение кнопкой из меню.",
+                "bot_link": f"https://t.me/{BOT_USERNAME}",
+            },
+        },
+    )
+
+
+def _safe_rate(rate: float | None) -> float:
+    if not rate or rate <= 0:
+        raise HTTPException(status_code=503, detail="TON rate temporarily unavailable")
+    return rate
+
+
+def _derive_payment_stage(payment: Payment, has_access: bool) -> str:
+    if payment.status == "completed" and has_access:
+        return "key_issued"
+    if payment.status == "completed":
+        return "confirmed"
+    if payment.status == "processing":
+        return "paid"
+    if payment.status == "expired":
+        return "expired"
+    return "created"
+
+
 def _generate_payment_code() -> str:
     chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     return "".join(secrets.choice(chars) for _ in range(8))
@@ -655,7 +744,10 @@ async def _find_or_create_user(session: AsyncSession, tg_id: int) -> User:
 @limiter.limit("60/minute")
 async def mini_bootstrap(request: Request, tg_id: int, init_data: str = ""):
     """Mini app bootstrap data: profile, prices, active subscriptions, support info."""
-    _verify_mini_auth(tg_id, init_data)
+    try:
+        _verify_mini_auth(tg_id, init_data)
+    except HTTPException:
+        return _mini_error_response("Invalid Telegram session", status_code=401)
 
     async with async_session() as session:
         user = await _find_or_create_user(session, tg_id)
@@ -680,9 +772,7 @@ async def mini_bootstrap(request: Request, tg_id: int, init_data: str = ""):
         dns_accesses = dns_result.scalars().all()
         referrals_count = referrals_result.scalar() or 0
 
-        rate = await get_ton_rub_rate()
-        if not rate or rate <= 0:
-            rate = 100.0
+        rate = _safe_rate(await get_ton_rub_rate())
 
         def plan_item(code: str, title: str, subtitle: str, price_rub: int):
             return {
@@ -763,23 +853,52 @@ async def mini_create_payment(request: Request, payload: dict):
     tg_id = int(payload.get("tg_id", 0))
     product = str(payload.get("product", "")).lower().strip()
     init_data = str(payload.get("init_data", "")).strip()
+    idempotency_key = str(payload.get("idempotency_key", "")).strip()
     if not tg_id or product not in {"vpn", "dns", "pro"}:
         raise HTTPException(status_code=400, detail="Invalid tg_id or product")
-    _verify_mini_auth(tg_id, init_data)
+    try:
+        _verify_mini_auth(tg_id, init_data)
+    except HTTPException:
+        return _mini_error_response("Invalid Telegram session", status_code=401)
     if not TON_WALLET:
         raise HTTPException(status_code=400, detail="TON wallet not configured")
 
     async with async_session() as session:
         user = await _find_or_create_user(session, tg_id)
-        rate = await get_ton_rub_rate()
-        if not rate or rate <= 0:
-            rate = 100.0
+        rate = _safe_rate(await get_ton_rub_rate())
 
         rub_prices = {"vpn": VPN_PRICE_RUB, "dns": DNS_PRICE_RUB, "pro": PRO_PRICE_RUB}
         amount_rub = rub_prices[product]
         amount_ton = round(amount_rub / rate, 2)
 
+        # Idempotency: if key provided, reuse a still-active pending payment for same user/product.
+        if idempotency_key:
+            existing_pending = (
+                await session.execute(
+                    select(Payment).where(
+                        Payment.user_id == user.id,
+                        Payment.product_type == product,
+                        Payment.status == "pending",
+                        Payment.expires_at > datetime.now(),
+                        Payment.payment_code.like(f"IDM{idempotency_key[:6]}%")
+                    ).order_by(Payment.created_at.desc()).limit(1)
+                )
+            ).scalar_one_or_none()
+            if existing_pending:
+                return JSONResponse(
+                    {
+                        "payment_code": existing_pending.payment_code,
+                        "amount_ton": existing_pending.amount_ton,
+                        "amount_rub": amount_rub,
+                        "expires_at": existing_pending.expires_at.strftime("%d.%m.%Y %H:%M"),
+                        "ton_link": _ton_link(TON_WALLET, existing_pending.amount_ton, existing_pending.payment_code),
+                        "bot_check_link": f"https://t.me/{BOT_USERNAME}?start=pay_{existing_pending.payment_code}",
+                    }
+                )
+
         payment_code = _generate_payment_code()
+        if idempotency_key:
+            payment_code = f"IDM{idempotency_key[:6].upper()}{payment_code[:2]}"
         for _ in range(10):
             exists = await session.execute(select(Payment).where(Payment.payment_code == payment_code))
             if not exists.scalar_one_or_none():
@@ -809,6 +928,61 @@ async def mini_create_payment(request: Request, payload: dict):
         )
 
 
+@app.get("/api/mini/payment-status")
+@limiter.limit("60/minute")
+async def mini_payment_status(request: Request, tg_id: int, payment_code: str, init_data: str = ""):
+    try:
+        _verify_mini_auth(tg_id, init_data)
+    except HTTPException:
+        return _mini_error_response("Invalid Telegram session", status_code=401)
+
+    async with async_session() as session:
+        user = await _find_or_create_user(session, tg_id)
+        payment = (
+            await session.execute(
+                select(Payment).where(
+                    Payment.user_id == user.id,
+                    Payment.payment_code == payment_code
+                )
+            )
+        ).scalar_one_or_none()
+        if not payment:
+            raise HTTPException(status_code=404, detail="Payment not found")
+
+        has_access = False
+        if payment.product_type in {"vpn", "pro"}:
+            has_access = (
+                await session.execute(
+                    select(func.count(VPNKey.id)).where(
+                        VPNKey.user_id == user.id,
+                        VPNKey.is_active == True,
+                        VPNKey.expires_at > datetime.now()
+                    )
+                )
+            ).scalar() > 0
+        if payment.product_type in {"dns", "pro"} and not has_access:
+            has_access = (
+                await session.execute(
+                    select(func.count(DNSAccess.id)).where(
+                        DNSAccess.user_id == user.id,
+                        DNSAccess.is_active == True,
+                        DNSAccess.expires_at > datetime.now()
+                    )
+                )
+            ).scalar() > 0
+
+        stage = _derive_payment_stage(payment, has_access)
+        return JSONResponse(
+            {
+                "payment_code": payment.payment_code,
+                "status": payment.status,
+                "stage": stage,
+                "is_final": stage in {"key_issued", "expired"},
+                "expires_at": payment.expires_at.strftime("%d.%m.%Y %H:%M"),
+            }
+        )
+
+
 @app.get("/api/mini/faq")
 async def mini_faq():
     """Frequently asked questions for mini app support section."""
@@ -834,6 +1008,60 @@ async def mini_faq():
             ]
         }
     )
+
+
+@app.get("/health/live")
+async def health_live():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    report = {"status": "ok", "checks": {}}
+    try:
+        async with async_session() as session:
+            await session.execute(select(func.count(User.id)))
+        report["checks"]["db"] = "ok"
+    except Exception as e:
+        report["checks"]["db"] = f"error: {e}"
+        report["status"] = "degraded"
+
+    # Optional external checks (skip when endpoints are missing).
+    timeout = aiohttp.ClientTimeout(total=3)
+    async with aiohttp.ClientSession(timeout=timeout) as http:
+        try:
+            r = await http.get("https://tonapi.io/v2/rates?tokens=ton&currencies=rub")
+            report["checks"]["ton_api"] = "ok" if r.status == 200 else f"http_{r.status}"
+        except Exception as e:
+            report["checks"]["ton_api"] = f"error: {e}"
+            report["status"] = "degraded"
+
+        # Probe first configured server endpoints.
+        try:
+            async with async_session() as session:
+                first_server = (await session.execute(select(Server).where(Server.is_active == True).limit(1))).scalar_one_or_none()
+            if first_server:
+                try:
+                    r_outline = await http.get(f"{first_server.outline_api_url}/access-keys")
+                    report["checks"]["outline_api"] = "ok" if r_outline.status < 500 else f"http_{r_outline.status}"
+                except Exception as e:
+                    report["checks"]["outline_api"] = f"error: {e}"
+                    report["status"] = "degraded"
+                try:
+                    r_adg = await http.get(f"{first_server.adguard_api_url}/control/status")
+                    report["checks"]["adguard_api"] = "ok" if r_adg.status < 500 else f"http_{r_adg.status}"
+                except Exception as e:
+                    report["checks"]["adguard_api"] = f"error: {e}"
+                    report["status"] = "degraded"
+            else:
+                report["checks"]["outline_api"] = "skipped"
+                report["checks"]["adguard_api"] = "skipped"
+        except Exception as e:
+            report["checks"]["servers"] = f"error: {e}"
+            report["status"] = "degraded"
+
+    status = 200 if report["status"] == "ok" else 503
+    return JSONResponse(status_code=status, content=report)
 
 
 if __name__ == "__main__":
