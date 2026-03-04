@@ -38,6 +38,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bot.database.models import Base, User, Payment, VPNKey, DNSAccess, P2POrder, P2POrderStatus, Server
 from bot.services.rate_service import get_ton_rub_rate
+from bot.services.settings_service import get_margin_percent, get_card_number, get_bank_name, get_sbp_phone
+from bot.services.ton_wallet import validate_ton_address, get_wallet
 
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///data/bot.db")
@@ -611,6 +613,12 @@ PRO_PRICE_RUB = int(os.getenv("PRO_PRICE_RUB", "200"))
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 MINI_APP_STRICT_AUTH = os.getenv("MINI_APP_STRICT_AUTH", "1").strip() == "1"
 TELEGRAM_INITDATA_MAX_AGE = int(os.getenv("TELEGRAM_INITDATA_MAX_AGE", "86400"))
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+MIN_TON = float(os.getenv("MIN_TON", "1"))
+MAX_TON = float(os.getenv("MAX_TON", "100"))
+P2P_DAILY_LIMIT = int(os.getenv("P2P_DAILY_LIMIT", "50000"))
+HOT_WALLET_MNEMONICS = os.getenv("HOT_WALLET_MNEMONICS", "").strip()
+DASHBOARD_PUBLIC_URL = os.getenv("DASHBOARD_PUBLIC_URL", "").strip()
 
 
 def _verify_telegram_init_data(init_data: str) -> dict | None:
@@ -711,6 +719,57 @@ def _derive_payment_stage(payment: Payment, has_access: bool) -> str:
     if payment.status == "expired":
         return "expired"
     return "created"
+
+
+def _mask_wallet(address: str) -> str:
+    if not address:
+        return ""
+    if len(address) < 14:
+        return address
+    return f"{address[:8]}...{address[-6:]}"
+
+
+async def _get_p2p_wallet_limit_ton() -> float:
+    """Get max available TON for P2P based on hot wallet balance."""
+    if not HOT_WALLET_MNEMONICS:
+        raise HTTPException(status_code=503, detail="P2P wallet is not configured")
+    try:
+        wallet = await get_wallet(HOT_WALLET_MNEMONICS)
+        balance = await wallet.get_balance()
+        return max(0.0, min(MAX_TON, balance - 0.1))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"P2P wallet unavailable: {e}")
+
+
+async def _notify_admins_about_p2p(order: P2POrder, user: User):
+    """Send admin notification via Telegram Bot API when user marks order as paid."""
+    if not BOT_TOKEN or not ADMIN_IDS:
+        return
+    dashboard_hint = f"\nОткройте dashboard: {DASHBOARD_PUBLIC_URL}/orders" if DASHBOARD_PUBLIC_URL else ""
+    text_msg = (
+        f"🔔 <b>P2P Заказ #{order.id}</b>\n\n"
+        f"👤 @{user.username or 'N/A'} (ID: {user.telegram_id})\n"
+        f"💎 {order.amount_ton} TON\n"
+        f"💵 {order.amount_rub} ₽\n"
+        f"👛 <code>{order.wallet_address}</code>\n\n"
+        f"⚠️ Проверьте поступление средств и подтвердите заказ в админке.{dashboard_hint}"
+    )
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as http:
+        for admin_id in ADMIN_IDS:
+            try:
+                await http.post(
+                    url,
+                    json={
+                        "chat_id": admin_id,
+                        "text": text_msg,
+                        "parse_mode": "HTML",
+                        "disable_web_page_preview": True,
+                    },
+                )
+            except Exception:
+                # Do not fail user request if admin notification failed.
+                pass
 
 
 def _generate_payment_code() -> str:
@@ -979,6 +1038,274 @@ async def mini_payment_status(request: Request, tg_id: int, payment_code: str, i
                 "stage": stage,
                 "is_final": stage in {"key_issued", "expired"},
                 "expires_at": payment.expires_at.strftime("%d.%m.%Y %H:%M"),
+            }
+        )
+
+
+@app.get("/api/mini/p2p/bootstrap")
+@limiter.limit("30/minute")
+async def mini_p2p_bootstrap(request: Request, tg_id: int, init_data: str = ""):
+    try:
+        _verify_mini_auth(tg_id, init_data)
+    except HTTPException:
+        return _mini_error_response("Invalid Telegram session", status_code=401)
+
+    async with async_session() as session:
+        user = await _find_or_create_user(session, tg_id)
+        max_available_ton = await _get_p2p_wallet_limit_ton()
+        margin = await get_margin_percent(session)
+        active_order = (
+            await session.execute(
+                select(P2POrder).where(
+                    P2POrder.user_id == user.id,
+                    P2POrder.status.in_([
+                        P2POrderStatus.PENDING.value,
+                        P2POrderStatus.WAITING_CONFIRMATION.value,
+                        "processing",
+                    ])
+                ).order_by(P2POrder.created_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+        order_data = None
+        if active_order:
+            order_data = {
+                "order_id": active_order.id,
+                "status": active_order.status,
+                "amount_ton": active_order.amount_ton,
+                "amount_rub": active_order.amount_rub,
+                "wallet_masked": _mask_wallet(active_order.wallet_address),
+            }
+        return JSONResponse(
+            {
+                "min_ton": MIN_TON,
+                "max_ton": max_available_ton,
+                "daily_limit_rub": P2P_DAILY_LIMIT,
+                "margin_percent": margin,
+                "active_order": order_data,
+            }
+        )
+
+
+@app.post("/api/mini/p2p/quote")
+@limiter.limit("30/minute")
+async def mini_p2p_quote(request: Request, payload: dict):
+    tg_id = int(payload.get("tg_id", 0))
+    init_data = str(payload.get("init_data", "")).strip()
+    amount_ton = float(payload.get("amount_ton", 0))
+    if not tg_id or amount_ton <= 0:
+        raise HTTPException(status_code=400, detail="Invalid tg_id or amount_ton")
+    try:
+        _verify_mini_auth(tg_id, init_data)
+    except HTTPException:
+        return _mini_error_response("Invalid Telegram session", status_code=401)
+
+    async with async_session() as session:
+        user = await _find_or_create_user(session, tg_id)
+        max_available_ton = await _get_p2p_wallet_limit_ton()
+        if amount_ton < MIN_TON:
+            raise HTTPException(status_code=400, detail=f"Minimum amount is {MIN_TON} TON")
+        if amount_ton > max_available_ton:
+            raise HTTPException(status_code=400, detail=f"Maximum available now is {max_available_ton:.2f} TON")
+
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        spent_today = (await session.execute(
+            select(func.sum(P2POrder.amount_rub)).where(
+                P2POrder.user_id == user.id,
+                P2POrder.created_at >= today,
+                P2POrder.status.in_([
+                    P2POrderStatus.PENDING.value,
+                    P2POrderStatus.WAITING_CONFIRMATION.value,
+                    "processing",
+                    P2POrderStatus.COMPLETED.value
+                ])
+            )
+        )).scalar() or 0
+
+        base_rate = _safe_rate(await get_ton_rub_rate())
+        margin = await get_margin_percent(session)
+        final_rate = base_rate * (1 + margin / 100)
+        amount_rub = int(amount_ton * final_rate)
+        if spent_today + amount_rub > P2P_DAILY_LIMIT:
+            remaining = max(0, P2P_DAILY_LIMIT - int(spent_today))
+            raise HTTPException(status_code=400, detail=f"Daily limit exceeded. Remaining: {remaining} RUB")
+
+        return JSONResponse(
+            {
+                "amount_ton": round(amount_ton, 4),
+                "amount_rub": amount_rub,
+                "rate_rub_per_ton": round(final_rate, 4),
+                "margin_percent": margin,
+                "max_available_ton": round(max_available_ton, 4),
+                "remaining_daily_rub": int(P2P_DAILY_LIMIT - spent_today - amount_rub),
+            }
+        )
+
+
+@app.post("/api/mini/p2p/create-order")
+@limiter.limit("20/minute")
+async def mini_p2p_create_order(request: Request, payload: dict):
+    tg_id = int(payload.get("tg_id", 0))
+    init_data = str(payload.get("init_data", "")).strip()
+    wallet_address = str(payload.get("wallet_address", "")).strip()
+    amount_ton = float(payload.get("amount_ton", 0))
+    if not tg_id or amount_ton <= 0 or not wallet_address:
+        raise HTTPException(status_code=400, detail="Invalid input")
+    try:
+        _verify_mini_auth(tg_id, init_data)
+    except HTTPException:
+        return _mini_error_response("Invalid Telegram session", status_code=401)
+
+    valid_wallet, wallet_error = validate_ton_address(wallet_address)
+    if not valid_wallet:
+        raise HTTPException(status_code=400, detail=f"Invalid TON wallet: {wallet_error}")
+
+    async with async_session() as session:
+        user = await _find_or_create_user(session, tg_id)
+        existing = (
+            await session.execute(
+                select(P2POrder).where(
+                    P2POrder.user_id == user.id,
+                    P2POrder.status.in_([
+                        P2POrderStatus.PENDING.value,
+                        P2POrderStatus.WAITING_CONFIRMATION.value,
+                        "processing",
+                    ])
+                ).order_by(P2POrder.created_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Active order already exists: #{existing.id}")
+
+        max_available_ton = await _get_p2p_wallet_limit_ton()
+        if amount_ton < MIN_TON or amount_ton > max_available_ton:
+            raise HTTPException(status_code=400, detail=f"Amount must be between {MIN_TON} and {max_available_ton:.2f} TON")
+
+        base_rate = _safe_rate(await get_ton_rub_rate())
+        margin = await get_margin_percent(session)
+        final_rate = base_rate * (1 + margin / 100)
+        amount_rub = int(amount_ton * final_rate)
+
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        spent_today = (await session.execute(
+            select(func.sum(P2POrder.amount_rub)).where(
+                P2POrder.user_id == user.id,
+                P2POrder.created_at >= today,
+                P2POrder.status.in_([
+                    P2POrderStatus.PENDING.value,
+                    P2POrderStatus.WAITING_CONFIRMATION.value,
+                    "processing",
+                    P2POrderStatus.COMPLETED.value
+                ])
+            )
+        )).scalar() or 0
+        if spent_today + amount_rub > P2P_DAILY_LIMIT:
+            remaining = max(0, P2P_DAILY_LIMIT - int(spent_today))
+            raise HTTPException(status_code=400, detail=f"Daily limit exceeded. Remaining: {remaining} RUB")
+
+        order = P2POrder(
+            user_id=user.id,
+            amount_ton=round(amount_ton, 4),
+            amount_rub=amount_rub,
+            exchange_rate=final_rate,
+            wallet_address=wallet_address,
+            status=P2POrderStatus.PENDING.value,
+        )
+        session.add(order)
+        await session.commit()
+        await session.refresh(order)
+
+        card = await get_card_number(session)
+        bank = await get_bank_name(session)
+        sbp = await get_sbp_phone(session)
+        return JSONResponse(
+            {
+                "order_id": order.id,
+                "status": order.status,
+                "amount_ton": order.amount_ton,
+                "amount_rub": order.amount_rub,
+                "wallet_masked": _mask_wallet(order.wallet_address),
+                "payment_requisites": {
+                    "bank": bank,
+                    "card": card,
+                    "sbp_phone": sbp,
+                },
+            }
+        )
+
+
+@app.post("/api/mini/p2p/mark-paid")
+@limiter.limit("20/minute")
+async def mini_p2p_mark_paid(request: Request, payload: dict):
+    tg_id = int(payload.get("tg_id", 0))
+    init_data = str(payload.get("init_data", "")).strip()
+    order_id = int(payload.get("order_id", 0))
+    if not tg_id or order_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid tg_id or order_id")
+    try:
+        _verify_mini_auth(tg_id, init_data)
+    except HTTPException:
+        return _mini_error_response("Invalid Telegram session", status_code=401)
+
+    async with async_session() as session:
+        user = await _find_or_create_user(session, tg_id)
+        order = (
+            await session.execute(
+                select(P2POrder).where(P2POrder.id == order_id, P2POrder.user_id == user.id)
+            )
+        ).scalar_one_or_none()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        if order.status == P2POrderStatus.PENDING.value:
+            order.status = P2POrderStatus.WAITING_CONFIRMATION.value
+            await session.commit()
+            await _notify_admins_about_p2p(order, user)
+
+        return JSONResponse(
+            {
+                "order_id": order.id,
+                "status": order.status,
+                "message": "Order sent to admin confirmation",
+            }
+        )
+
+
+@app.get("/api/mini/p2p/order-status")
+@limiter.limit("60/minute")
+async def mini_p2p_order_status(request: Request, tg_id: int, order_id: int, init_data: str = ""):
+    try:
+        _verify_mini_auth(tg_id, init_data)
+    except HTTPException:
+        return _mini_error_response("Invalid Telegram session", status_code=401)
+
+    async with async_session() as session:
+        user = await _find_or_create_user(session, tg_id)
+        order = (
+            await session.execute(
+                select(P2POrder).where(P2POrder.id == order_id, P2POrder.user_id == user.id)
+            )
+        ).scalar_one_or_none()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        stage_map = {
+            P2POrderStatus.PENDING.value: "created",
+            P2POrderStatus.WAITING_CONFIRMATION.value: "paid",
+            "processing": "processing",
+            P2POrderStatus.COMPLETED.value: "completed",
+            P2POrderStatus.CANCELED.value: "canceled",
+        }
+        stage = stage_map.get(order.status, "created")
+        return JSONResponse(
+            {
+                "order_id": order.id,
+                "status": order.status,
+                "stage": stage,
+                "is_final": stage in {"completed", "canceled"},
+                "amount_ton": order.amount_ton,
+                "amount_rub": order.amount_rub,
+                "tx_hash": order.tx_hash,
+                "tx_link": f"https://tonviewer.com/transaction/{order.tx_hash}" if order.tx_hash else None,
+                "cancel_reason": order.cancel_reason,
             }
         )
 

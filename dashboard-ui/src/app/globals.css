@@ -333,6 +333,29 @@ body {
   background: linear-gradient(135deg, rgba(61, 224, 193, 0.28), rgba(123, 233, 255, 0.2));
 }
 
+.text-input {
+  width: 100%;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: rgba(7, 24, 34, 0.62);
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 14px;
+  outline: none;
+}
+
+.text-input:focus {
+  border-color: rgba(61, 224, 193, 0.6);
+  box-shadow: 0 0 0 2px rgba(61, 224, 193, 0.18);
+}
+
+.p2p-box {
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  background: rgba(8, 25, 36, 0.62);
+  padding: 10px;
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }
