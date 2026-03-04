@@ -62,6 +62,15 @@ export type PaymentStatusResponse = {
   expires_at: string;
 };
 
+export type PaymentConfirmResponse = {
+  payment_code: string;
+  status: string;
+  stage: PaymentStage;
+  is_final: boolean;
+  verified: boolean;
+  message?: string;
+};
+
 export type P2PQuoteResponse = {
   amount_ton: number;
   amount_rub: number;

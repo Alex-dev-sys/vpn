@@ -40,6 +40,8 @@ from bot.database.models import Base, User, Payment, VPNKey, DNSAccess, P2POrder
 from bot.services.rate_service import get_ton_rub_rate
 from bot.services.settings_service import get_margin_percent, get_card_number, get_bank_name, get_sbp_phone
 from bot.services.ton_wallet import validate_ton_address, get_wallet
+from bot.services.ton_api import verify_ton_payment
+from bot.handlers.payment import try_mark_payment_processing, activate_subscription
 
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///data/bot.db")
@@ -721,6 +723,47 @@ def _derive_payment_stage(payment: Payment, has_access: bool) -> str:
     return "created"
 
 
+async def _has_active_access(session: AsyncSession, user: User, product_type: str) -> bool:
+    has_access = False
+    if product_type in {"vpn", "pro"}:
+        has_access = (
+            await session.execute(
+                select(func.count(VPNKey.id)).where(
+                    VPNKey.user_id == user.id,
+                    VPNKey.is_active == True,
+                    VPNKey.expires_at > datetime.now()
+                )
+            )
+        ).scalar() > 0
+    if product_type in {"dns", "pro"} and not has_access:
+        has_access = (
+            await session.execute(
+                select(func.count(DNSAccess.id)).where(
+                    DNSAccess.user_id == user.id,
+                    DNSAccess.is_active == True,
+                    DNSAccess.expires_at > datetime.now()
+                )
+            )
+        ).scalar() > 0
+    return has_access
+
+
+class _MiniBotShim:
+    async def send_message(self, *_args, **_kwargs):
+        return None
+
+
+class _MiniMessageShim:
+    def __init__(self):
+        self.bot = _MiniBotShim()
+
+    async def answer(self, *_args, **_kwargs):
+        return None
+
+    async def edit_text(self, *_args, **_kwargs):
+        return None
+
+
 def _mask_wallet(address: str) -> str:
     if not address:
         return ""
@@ -1008,27 +1051,7 @@ async def mini_payment_status(request: Request, tg_id: int, payment_code: str, i
         if not payment:
             raise HTTPException(status_code=404, detail="Payment not found")
 
-        has_access = False
-        if payment.product_type in {"vpn", "pro"}:
-            has_access = (
-                await session.execute(
-                    select(func.count(VPNKey.id)).where(
-                        VPNKey.user_id == user.id,
-                        VPNKey.is_active == True,
-                        VPNKey.expires_at > datetime.now()
-                    )
-                )
-            ).scalar() > 0
-        if payment.product_type in {"dns", "pro"} and not has_access:
-            has_access = (
-                await session.execute(
-                    select(func.count(DNSAccess.id)).where(
-                        DNSAccess.user_id == user.id,
-                        DNSAccess.is_active == True,
-                        DNSAccess.expires_at > datetime.now()
-                    )
-                )
-            ).scalar() > 0
+        has_access = await _has_active_access(session, user, payment.product_type)
 
         stage = _derive_payment_stage(payment, has_access)
         return JSONResponse(
@@ -1038,6 +1061,119 @@ async def mini_payment_status(request: Request, tg_id: int, payment_code: str, i
                 "stage": stage,
                 "is_final": stage in {"key_issued", "expired"},
                 "expires_at": payment.expires_at.strftime("%d.%m.%Y %H:%M"),
+            }
+        )
+
+
+@app.post("/api/mini/confirm-payment")
+@limiter.limit("20/minute")
+async def mini_confirm_payment(request: Request, payload: dict):
+    """
+    Confirm TON transfer and issue access directly in Mini App.
+    Body: { "tg_id": 123, "payment_code": "AB12CD34" }
+    """
+    tg_id = int(payload.get("tg_id", 0))
+    payment_code = str(payload.get("payment_code", "")).strip().upper()
+    init_data = str(payload.get("init_data", "")).strip()
+    if not tg_id or not payment_code:
+        raise HTTPException(status_code=400, detail="Invalid tg_id or payment_code")
+    try:
+        _verify_mini_auth(tg_id, init_data)
+    except HTTPException:
+        return _mini_error_response("Invalid Telegram session", status_code=401)
+
+    if not TON_WALLET:
+        raise HTTPException(status_code=400, detail="TON wallet not configured")
+
+    async with async_session() as session:
+        user = await _find_or_create_user(session, tg_id)
+        payment = (
+            await session.execute(
+                select(Payment).where(
+                    Payment.user_id == user.id,
+                    Payment.payment_code == payment_code,
+                )
+            )
+        ).scalar_one_or_none()
+        if not payment:
+            raise HTTPException(status_code=404, detail="Payment not found")
+
+        if payment.expires_at < datetime.now() and payment.status != "completed":
+            payment.status = "expired"
+            await session.commit()
+            return JSONResponse(
+                status_code=410,
+                content={
+                    "payment_code": payment.payment_code,
+                    "status": payment.status,
+                    "stage": "expired",
+                    "is_final": True,
+                    "message": "Payment expired. Create a new payment.",
+                },
+            )
+
+        if payment.status == "completed":
+            has_access = await _has_active_access(session, user, payment.product_type)
+            stage = _derive_payment_stage(payment, has_access)
+            return JSONResponse(
+                {
+                    "payment_code": payment.payment_code,
+                    "status": payment.status,
+                    "stage": stage,
+                    "is_final": stage in {"key_issued", "expired"},
+                    "verified": True,
+                }
+            )
+
+        locked = await try_mark_payment_processing(session, payment.id, user.id)
+        await session.commit()
+        if not locked:
+            await session.refresh(payment)
+            has_access = await _has_active_access(session, user, payment.product_type)
+            stage = _derive_payment_stage(payment, has_access)
+            return JSONResponse(
+                {
+                    "payment_code": payment.payment_code,
+                    "status": payment.status,
+                    "stage": stage,
+                    "is_final": stage in {"key_issued", "expired"},
+                    "verified": payment.status == "completed",
+                    "message": "Payment is already being processed.",
+                }
+            )
+
+        payment_verified = await verify_ton_payment(
+            wallet=TON_WALLET,
+            amount_ton=payment.amount_ton,
+            payment_code=payment.payment_code,
+            since_minutes=30,
+        )
+        if not payment_verified:
+            payment.status = "pending"
+            await session.commit()
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "payment_code": payment.payment_code,
+                    "status": payment.status,
+                    "stage": "created",
+                    "is_final": False,
+                    "verified": False,
+                    "message": "Payment not found in blockchain yet.",
+                },
+            )
+
+        await activate_subscription(session, user, payment, _MiniMessageShim())
+        await session.refresh(payment)
+        has_access = await _has_active_access(session, user, payment.product_type)
+        stage = _derive_payment_stage(payment, has_access)
+        return JSONResponse(
+            {
+                "payment_code": payment.payment_code,
+                "status": payment.status,
+                "stage": stage,
+                "is_final": stage in {"key_issued", "expired"},
+                "verified": True,
             }
         )
 

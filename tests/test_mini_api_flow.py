@@ -1,6 +1,7 @@
 import importlib
 import os
 import time
+from datetime import datetime
 
 import pytest
 from fastapi import HTTPException
@@ -36,6 +37,12 @@ def client(monkeypatch):
         return "Сбербанк"
     async def fake_sbp(_session):
         return "+79990000000"
+    async def fake_verify_ton_payment(*_args, **_kwargs):
+        return True
+    async def fake_activate_subscription(session, _user, payment, _message):
+        payment.status = "completed"
+        payment.completed_at = datetime.now()
+        await session.commit()
 
     monkeypatch.setattr(dashboard_app_module, "get_ton_rub_rate", fake_rate)
     monkeypatch.setattr(dashboard_app_module, "get_wallet", fake_get_wallet)
@@ -43,6 +50,8 @@ def client(monkeypatch):
     monkeypatch.setattr(dashboard_app_module, "get_card_number", fake_card)
     monkeypatch.setattr(dashboard_app_module, "get_bank_name", fake_bank)
     monkeypatch.setattr(dashboard_app_module, "get_sbp_phone", fake_sbp)
+    monkeypatch.setattr(dashboard_app_module, "verify_ton_payment", fake_verify_ton_payment)
+    monkeypatch.setattr(dashboard_app_module, "activate_subscription", fake_activate_subscription)
     return TestClient(dashboard_app_module.app)
 
 
@@ -75,6 +84,14 @@ def test_create_payment_idempotency_and_status(client: TestClient):
     )
     assert status.status_code == 200
     assert status.json()["stage"] == "created"
+
+    confirm = client.post(
+        "/api/mini/confirm-payment",
+        json={"tg_id": 20202, "payment_code": p1["payment_code"]},
+    )
+    assert confirm.status_code == 200
+    assert confirm.json()["verified"] is True
+    assert confirm.json()["stage"] in {"confirmed", "key_issued"}
 
 
 def test_mini_auth_fallback_response(client: TestClient, monkeypatch):

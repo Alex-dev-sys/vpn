@@ -15,6 +15,7 @@ import {
   P2POrderStatusResponse,
   P2PQuoteResponse,
   PaymentResponse,
+  PaymentConfirmResponse,
   PaymentStage,
   PaymentStatusResponse,
   TabKey,
@@ -136,6 +137,39 @@ export default function Home() {
       openLink(data.ton_link);
     } catch {
       setError("Не удалось создать платеж. Попробуйте ещё раз.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmPayment = async () => {
+    if (!payment?.payment_code) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/mini/confirm-payment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tg_id: tgId,
+          init_data: initData,
+          payment_code: payment.payment_code,
+        }),
+      });
+      const data = (await response.json().catch(() => null)) as PaymentConfirmResponse | null;
+      if (!response.ok) {
+        throw new Error(data?.message || "confirm_failed");
+      }
+      if (data?.stage) {
+        setPaymentStage(data.stage);
+      }
+      if (data?.verified) {
+        setNotice("Оплата подтверждена в Mini App. Проверяю выдачу доступа...");
+      } else {
+        setNotice(data?.message || "Платёж еще не найден, попробуйте через минуту.");
+      }
+    } catch (e) {
+      setError(`Не удалось подтвердить платёж: ${e instanceof Error ? e.message : "ошибка"}`);
     } finally {
       setBusy(false);
     }
@@ -344,9 +378,7 @@ export default function Home() {
                   if (payment) void copyText(payment.payment_code);
                 }}
                 onPaymentMarkPaid={() => {
-                  if (!payment) return;
-                  setPaymentStage("paid");
-                  openLink(payment.bot_check_link);
+                  void confirmPayment();
                 }}
               />
             )}
