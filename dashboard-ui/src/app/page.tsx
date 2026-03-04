@@ -5,9 +5,12 @@ import {
   BadgeHelp,
   CircleUserRound,
   Copy,
+  ExternalLink,
   Headset,
   House,
   Link2,
+  LoaderCircle,
+  ShieldCheck,
   Settings,
   Sparkles,
   Zap,
@@ -64,6 +67,7 @@ type TelegramWebApp = {
   ready: () => void;
   expand: () => void;
   openLink?: (url: string) => void;
+  initData?: string;
   initDataUnsafe?: { user?: { id?: number } };
 };
 
@@ -74,12 +78,14 @@ const API_BASE =
 export default function Home() {
   const [tab, setTab] = useState<TabKey>("store");
   const [tgId, setTgId] = useState<number>(2096689952);
+  const [initData, setInitData] = useState<string>("");
   const [bootstrap, setBootstrap] = useState<BootstrapResponse | null>(null);
   const [faq, setFaq] = useState<FaqResponse["items"]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [payment, setPayment] = useState<PaymentResponse | null>(null);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const webApp = useMemo(
     () =>
@@ -94,6 +100,7 @@ export default function Home() {
     webApp?.expand();
     const id = webApp?.initDataUnsafe?.user?.id;
     if (id) setTgId(id);
+    if (webApp?.initData) setInitData(webApp.initData);
   }, [webApp]);
 
   useEffect(() => {
@@ -102,7 +109,11 @@ export default function Home() {
       setError(null);
       try {
         const [bootstrapRes, faqRes] = await Promise.all([
-          fetch(`${API_BASE}/api/mini/bootstrap?tg_id=${tgId}`),
+          fetch(
+            `${API_BASE}/api/mini/bootstrap?tg_id=${tgId}${
+              initData ? `&init_data=${encodeURIComponent(initData)}` : ""
+            }`
+          ),
           fetch(`${API_BASE}/api/mini/faq`),
         ]);
 
@@ -122,7 +133,7 @@ export default function Home() {
     };
 
     void load();
-  }, [tgId]);
+  }, [tgId, initData]);
 
   const openLink = (url: string) => {
     if (webApp?.openLink) {
@@ -134,16 +145,18 @@ export default function Home() {
 
   const createPayment = async (product: "vpn" | "dns" | "pro") => {
     setBusy(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE}/api/mini/create-payment`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tg_id: tgId, product }),
+        body: JSON.stringify({ tg_id: tgId, product, init_data: initData }),
       });
 
       if (!response.ok) throw new Error("payment_failed");
       const data = (await response.json()) as PaymentResponse;
       setPayment(data);
+      setNotice(`Платёж ${data.payment_code} создан. Проверьте кошелёк и подтвердите оплату.`);
       openLink(data.ton_link);
     } catch {
       setError("Не удалось создать платеж. Попробуйте ещё раз.");
@@ -155,10 +168,13 @@ export default function Home() {
   const copyText = async (value: string) => {
     try {
       await navigator.clipboard.writeText(value);
+      setNotice("Скопировано в буфер обмена.");
     } catch {
       setError("Не получилось скопировать в буфер обмена.");
     }
   };
+
+  const statusLabel = bootstrap?.status.state === "online" ? "Защита активна" : "Нет активной защиты";
 
   const activeVpn = bootstrap?.install.vpn_keys?.[0];
   const activeDns = bootstrap?.install.dns?.[0];
@@ -183,6 +199,7 @@ export default function Home() {
 
         {loading && <div className="panel p-4 text-sm text-white/70">Загрузка данных...</div>}
         {error && !loading && <div className="error-panel mb-3">{error}</div>}
+        {notice && !loading && <div className="notice-panel mb-3">{notice}</div>}
 
         {bootstrap && (
           <div className="space-y-3 pb-22">
@@ -191,7 +208,7 @@ export default function Home() {
                 <section className="panel hero-card">
                   <div className="hero-meta">
                     <span className={`status-dot ${bootstrap.status.state === "online" ? "status-online" : "status-offline"}`} />
-                    <span className="text-xs uppercase tracking-wide text-white/70">{bootstrap.status.state}</span>
+                    <span className="text-xs uppercase tracking-wide text-white/70">{statusLabel}</span>
                   </div>
                   <h1 className="text-3xl font-semibold leading-tight">
                     {bootstrap.status.active_until ? `Доступ до ${bootstrap.status.active_until}` : "Подключите защиту в 1 тап"}
@@ -200,27 +217,47 @@ export default function Home() {
                     VPN + DNS с реальными статусами, быстрым продлением и P2P покупкой TON.
                   </p>
 
+                  <div className="hero-stats">
+                    <div>
+                      <p className="hero-k">Баланс</p>
+                      <p className="hero-v">{bootstrap.user.balance_ton} TON</p>
+                    </div>
+                    <div>
+                      <p className="hero-k">Рефералы</p>
+                      <p className="hero-v">{bootstrap.user.referrals_count}</p>
+                    </div>
+                    <div>
+                      <p className="hero-k">Курс</p>
+                      <p className="hero-v">{bootstrap.prices.rate_rub_per_ton} ₽</p>
+                    </div>
+                  </div>
+
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <button disabled={busy} onClick={() => createPayment("pro")} className="primary-btn disabled:opacity-60">
-                      <Sparkles size={16} />
-                      Купить PRO
+                      {busy ? <LoaderCircle size={16} className="spin" /> : <Sparkles size={16} />}
+                      {busy ? "Создаю платёж..." : "Купить PRO"}
                     </button>
                     <button onClick={() => openLink(bootstrap.links.p2p)} className="secondary-btn">
                       <Zap size={16} />
                       Купить TON
                     </button>
                   </div>
-                  <p className="mt-2 text-xs text-white/60">Курс: {bootstrap.prices.rate_rub_per_ton} ₽ / TON</p>
                 </section>
 
                 {payment && (
                   <section className="panel">
-                    <p className="text-sm">
-                      Платеж <b>{payment.payment_code}</b>: {payment.amount_ton} TON (~{payment.amount_rub} ₽)
-                    </p>
-                    <div className="mt-2 grid grid-cols-2 gap-2">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-sm">
+                        Платеж <b>{payment.payment_code}</b>: {payment.amount_ton} TON (~{payment.amount_rub} ₽)
+                      </p>
+                      <button className="icon-btn" onClick={() => copyText(payment.payment_code)}>
+                        <Copy size={14} />
+                      </button>
+                    </div>
+                    <p className="text-xs text-white/60">Истекает: {payment.expires_at}</p>
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                       <button className="primary-btn" onClick={() => openLink(payment.ton_link)}>
-                        Оплатить
+                        Оплатить в Tonkeeper
                       </button>
                       <button className="secondary-btn" onClick={() => openLink(payment.bot_check_link)}>
                         Я оплатил
@@ -236,19 +273,19 @@ export default function Home() {
                   </div>
                   <div className="space-y-2">
                     {bootstrap.prices.plans.map((plan) => (
-                      <div key={plan.code} className="plan-row">
-                        <div>
-                          <p className="font-medium">{plan.title}</p>
-                          <p className="text-xs text-white/60">{plan.subtitle}</p>
+                        <div key={plan.code} className="plan-row">
+                          <div>
+                            <p className="font-medium">{plan.title}</p>
+                            <p className="text-xs text-white/60">{plan.subtitle}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="font-semibold">{plan.price_rub} ₽</p>
+                            <p className="text-xs text-white/60">{plan.price_ton} TON</p>
+                            <button disabled={busy} className="mini-btn mt-1 disabled:opacity-60" onClick={() => createPayment(plan.code)}>
+                              Купить
+                            </button>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <p className="font-semibold">{plan.price_rub} ₽</p>
-                          <p className="text-xs text-white/60">{plan.price_ton} TON</p>
-                          <button className="mini-btn mt-1" onClick={() => createPayment(plan.code)}>
-                            Купить
-                          </button>
-                        </div>
-                      </div>
                     ))}
                   </div>
                 </section>
@@ -273,14 +310,16 @@ export default function Home() {
                     <InfoRow title="DNS сервер" value={activeDns?.dns_server_ip || "Будет после покупки DNS"} />
                     <InfoRow title="Текущий IP" value={activeDns?.current_ip || "Не определён"} />
                   </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <button
                       className="primary-btn"
                       onClick={() => (activeVpn ? openLink(activeVpn.access_url) : openLink(bootstrap.links.bot))}
                     >
+                      <ShieldCheck size={16} />
                       На этом устройстве
                     </button>
                     <button className="secondary-btn" onClick={() => openLink(bootstrap.links.bot)}>
+                      <ExternalLink size={16} />
                       На другом устройстве
                     </button>
                   </div>

@@ -77,6 +77,7 @@ pip install -r requirements.txt
 ```env
 BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
 ADMIN_IDS=123456789
+DASHBOARD_PASSWORD=CHANGE_ME_STRONG
 
 TON_WALLET=YOUR_TON_WALLET
 HOT_WALLET_MNEMONICS=...
@@ -91,6 +92,8 @@ BOT_USERNAME=your_bot_username
 SUPPORT_USERNAME=your_support_username
 
 MINI_APP_URL=https://your-domain.com
+CORS_ORIGINS=https://your-domain.com
+MINI_APP_STRICT_AUTH=1
 ```
 
 ### 3. Запуск бота

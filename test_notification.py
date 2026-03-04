@@ -1,17 +1,22 @@
 import asyncio
 import os
+import sys
 from datetime import datetime, timedelta
 from sqlalchemy import select
+import pytest
 
 # Mock bot instance before importing scheduler to avoid circular deps or init issues
 class DummyBot:
     async def send_message(self, chat_id, text, reply_markup=None):
+        encoding = (getattr(sys.stdout, "encoding", None) or "utf-8")
+        safe_text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
         print(f"\n--- NOTIFICATION to {chat_id} ---")
-        print(text)
+        print(safe_text)
         if reply_markup:
             print("KEYBOARD PRESENT")
         print("-------------------------------\n")
 
+@pytest.mark.asyncio
 async def test():
     # Setup DB
     from bot.database.core import init_db, async_session_factory
@@ -68,6 +73,7 @@ async def test():
         # Verify status updated
         await session.refresh(key)
         print(f"Key notification status: {key.notification_status}")
+        assert key.notification_status == 1
         
         # Cleanup
         await session.delete(key)

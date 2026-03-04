@@ -31,7 +31,7 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-TON_WALLET = os.getenv("TON_WALLET", "UQCAKkJZSo2h5VAWyPO1vGtqFbRMp_x-rHlYfmTsUBFQUDl-")
+TON_WALLET = os.getenv("TON_WALLET", "").strip()
 
 # Цены в РУБЛЯХ (конвертируются в TON по текущему курсу)
 VPN_PRICE_RUB = int(os.getenv("VPN_PRICE_RUB", "150"))
@@ -66,6 +66,10 @@ async def get_price_in_ton(product: str) -> tuple[float, float, int]:
     
     price_ton = round(price_rub / rate, 2)
     return price_ton, rate, price_rub
+
+
+def is_ton_wallet_configured() -> bool:
+    return bool(TON_WALLET)
 
 
 def generate_payment_code() -> str:
@@ -154,6 +158,10 @@ async def create_payment(session: AsyncSession, user: User, product: str, amount
 @router.callback_query(F.data == "buy_vpn")
 async def cb_buy_vpn(callback: types.CallbackQuery, session: AsyncSession, user: User, state: FSMContext):
     """Покупка VPN"""
+    if not is_ton_wallet_configured():
+        await callback.answer("⚠️ Оплата временно недоступна: TON кошелек не настроен", show_alert=True)
+        return
+
     await state.update_data(product="vpn")
     price_ton, rate, price_rub = await get_price_in_ton("vpn")
     
@@ -196,6 +204,10 @@ async def cb_buy_vpn(callback: types.CallbackQuery, session: AsyncSession, user:
 @router.callback_query(F.data == "buy_dns")
 async def cb_buy_dns(callback: types.CallbackQuery, session: AsyncSession, user: User, state: FSMContext):
     """Покупка DNS"""
+    if not is_ton_wallet_configured():
+        await callback.answer("⚠️ Оплата временно недоступна: TON кошелек не настроен", show_alert=True)
+        return
+
     await state.update_data(product="dns")
     price_ton, rate, price_rub = await get_price_in_ton("dns")
     
@@ -237,6 +249,10 @@ async def cb_buy_dns(callback: types.CallbackQuery, session: AsyncSession, user:
 @router.callback_query(F.data == "buy_pro")
 async def cb_buy_pro(callback: types.CallbackQuery, session: AsyncSession, user: User, state: FSMContext):
     """Покупка PRO (VPN+DNS)"""
+    if not is_ton_wallet_configured():
+        await callback.answer("⚠️ Оплата временно недоступна: TON кошелек не настроен", show_alert=True)
+        return
+
     await state.update_data(product="pro")
     price_ton, rate, price_rub = await get_price_in_ton("pro")
     

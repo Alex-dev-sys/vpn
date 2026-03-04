@@ -5,9 +5,12 @@ import os
 import asyncio
 import secrets
 import bcrypt
+import hashlib
+import hmac
+import json
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
-from urllib.parse import quote
+from urllib.parse import quote, parse_qsl
 
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -41,7 +44,10 @@ engine = create_async_engine(DATABASE_URL, echo=False)
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 # Password handling
-ADMIN_PASSWORD_RAW = os.getenv("DASHBOARD_PASSWORD", "admin123")
+ADMIN_PASSWORD_RAW = os.getenv("DASHBOARD_PASSWORD", "").strip()
+if not ADMIN_PASSWORD_RAW:
+    raise RuntimeError("DASHBOARD_PASSWORD is required and must not be empty")
+
 # Check if already hashed (starts with $2b$)
 if ADMIN_PASSWORD_RAW.startswith("$2b$"):
     ADMIN_PASSWORD_HASH = ADMIN_PASSWORD_RAW.encode()
@@ -51,8 +57,13 @@ else:
 def verify_password(password: str) -> bool:
     return bcrypt.checkpw(password.encode(), ADMIN_PASSWORD_HASH)
 
-# Session storage (simple in-memory)
+# Session storage (simple in-memory with TTL)
 sessions = {}
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "43200"))  # 12h
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "1").strip() == "1"
+COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax").strip().lower()
+if COOKIE_SAMESITE not in {"lax", "strict", "none"}:
+    COOKIE_SAMESITE = "lax"
 
 # Rate limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -63,9 +74,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Admin Dashboard", lifespan=lifespan)
 app.state.limiter = limiter
+CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "").split(",") if x.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -102,7 +114,15 @@ async def ip_whitelist_middleware(request: Request, call_next):
 def check_auth(request: Request) -> bool:
     """Check if user is authenticated"""
     session_id = request.cookies.get("session_id")
-    return session_id in sessions
+    if not session_id:
+        return False
+    expires_at = sessions.get(session_id)
+    if not expires_at:
+        return False
+    if datetime.now() > expires_at:
+        sessions.pop(session_id, None)
+        return False
+    return True
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -140,9 +160,16 @@ async def login(request: Request, password: str = Form(...), totp_code: str = Fo
         return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный 2FA код", "show_2fa": True})
     
     session_id = secrets.token_hex(16)
-    sessions[session_id] = True
+    sessions[session_id] = datetime.now() + timedelta(seconds=SESSION_TTL_SECONDS)
     response = RedirectResponse("/dashboard", status_code=302)
-    response.set_cookie("session_id", session_id, httponly=True)
+    response.set_cookie(
+        "session_id",
+        session_id,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=SESSION_TTL_SECONDS,
+    )
     return response
 
 
@@ -525,6 +552,76 @@ SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "dns_vpn_support")
 VPN_PRICE_RUB = int(os.getenv("VPN_PRICE_RUB", "150"))
 DNS_PRICE_RUB = int(os.getenv("DNS_PRICE_RUB", "100"))
 PRO_PRICE_RUB = int(os.getenv("PRO_PRICE_RUB", "200"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+MINI_APP_STRICT_AUTH = os.getenv("MINI_APP_STRICT_AUTH", "0").strip() == "1"
+TELEGRAM_INITDATA_MAX_AGE = int(os.getenv("TELEGRAM_INITDATA_MAX_AGE", "86400"))
+
+
+def _verify_telegram_init_data(init_data: str) -> dict | None:
+    """
+    Validate Telegram WebApp initData signature.
+    Returns parsed fields on success, None on failure.
+    """
+    if not init_data or not BOT_TOKEN:
+        return None
+
+    try:
+        parsed = dict(parse_qsl(init_data, keep_blank_values=True))
+    except Exception:
+        return None
+
+    recv_hash = parsed.get("hash")
+    if not recv_hash:
+        return None
+
+    data_check_items = []
+    for key in sorted(parsed.keys()):
+        if key == "hash":
+            continue
+        data_check_items.append(f"{key}={parsed[key]}")
+    data_check_string = "\n".join(data_check_items)
+
+    secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
+    calc_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(calc_hash, recv_hash):
+        return None
+
+    try:
+        auth_date = int(parsed.get("auth_date", "0"))
+    except ValueError:
+        return None
+    if auth_date <= 0:
+        return None
+    if (datetime.now() - datetime.fromtimestamp(auth_date)).total_seconds() > TELEGRAM_INITDATA_MAX_AGE:
+        return None
+
+    return parsed
+
+
+def _verify_mini_auth(tg_id: int, init_data: str | None):
+    """Verify tg_id against signed Telegram initData when strict mode is enabled."""
+    if not MINI_APP_STRICT_AUTH:
+        return
+
+    if not BOT_TOKEN:
+        raise HTTPException(status_code=500, detail="BOT_TOKEN is required for strict mini app auth")
+    if not init_data:
+        raise HTTPException(status_code=401, detail="Telegram initData is required")
+
+    parsed = _verify_telegram_init_data(init_data)
+    if not parsed:
+        raise HTTPException(status_code=401, detail="Invalid Telegram initData")
+
+    user_raw = parsed.get("user")
+    if not user_raw:
+        raise HTTPException(status_code=401, detail="initData.user is missing")
+    try:
+        user_obj = json.loads(user_raw)
+    except Exception:
+        raise HTTPException(status_code=401, detail="initData.user is invalid")
+    user_id = int(user_obj.get("id", 0))
+    if user_id != tg_id:
+        raise HTTPException(status_code=401, detail="tg_id mismatch")
 
 
 def _generate_payment_code() -> str:
@@ -555,8 +652,11 @@ async def _find_or_create_user(session: AsyncSession, tg_id: int) -> User:
 
 
 @app.get("/api/mini/bootstrap")
-async def mini_bootstrap(tg_id: int):
+@limiter.limit("60/minute")
+async def mini_bootstrap(request: Request, tg_id: int, init_data: str = ""):
     """Mini app bootstrap data: profile, prices, active subscriptions, support info."""
+    _verify_mini_auth(tg_id, init_data)
+
     async with async_session() as session:
         user = await _find_or_create_user(session, tg_id)
         now = datetime.now()
@@ -654,15 +754,18 @@ async def mini_bootstrap(tg_id: int):
 
 
 @app.post("/api/mini/create-payment")
-async def mini_create_payment(payload: dict):
+@limiter.limit("20/minute")
+async def mini_create_payment(request: Request, payload: dict):
     """
     Create payment for mini app checkout.
     Body: { "tg_id": 123, "product": "vpn|dns|pro" }
     """
     tg_id = int(payload.get("tg_id", 0))
     product = str(payload.get("product", "")).lower().strip()
+    init_data = str(payload.get("init_data", "")).strip()
     if not tg_id or product not in {"vpn", "dns", "pro"}:
         raise HTTPException(status_code=400, detail="Invalid tg_id or product")
+    _verify_mini_auth(tg_id, init_data)
     if not TON_WALLET:
         raise HTTPException(status_code=400, detail="TON wallet not configured")
 
