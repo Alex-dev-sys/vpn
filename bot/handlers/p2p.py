@@ -15,7 +15,7 @@ from bot.database.models import User, P2POrder, P2POrderStatus
 from bot.keyboards.main import back_to_main_kb
 from bot.services.rate_service import get_ton_rub_rate
 from bot.services.settings_service import get_margin_percent, get_card_number, get_bank_name, get_sbp_phone
-from bot.services.ton_wallet import validate_ton_address, get_wallet
+from bot.services.ton_wallet import validate_ton_address, get_wallet, reset_wallet
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -405,6 +405,12 @@ async def admin_confirm_p2p(callback: CallbackQuery, session: AsyncSession, bot:
             await callback.message.edit_text("❌ Ошибка настройки кошелька P2P. Проверьте HOT_WALLET_ADDRESS.")
             return
         tx_result = await wallet.send_ton(order.wallet_address, order.amount_ton)
+
+        if (not tx_result.success) and tx_result.error and "alive peers" in tx_result.error.lower():
+            logger.warning("TON send failed due to dead peers, resetting wallet and retrying once")
+            await reset_wallet()
+            wallet = await get_wallet(hot_wallet_mnemonics)
+            tx_result = await wallet.send_ton(order.wallet_address, order.amount_ton)
         
         if tx_result.success:
             order.status = P2POrderStatus.COMPLETED.value

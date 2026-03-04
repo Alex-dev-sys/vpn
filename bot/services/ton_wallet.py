@@ -207,6 +207,17 @@ def validate_ton_address(address: str) -> Tuple[bool, str]:
 _wallet_instance: Optional[TONWallet] = None
 
 
+async def reset_wallet() -> None:
+    """Drop cached wallet instance and close active provider connections."""
+    global _wallet_instance
+    if _wallet_instance is not None:
+        try:
+            await _wallet_instance.close()
+        except Exception:
+            pass
+    _wallet_instance = None
+
+
 async def get_wallet(mnemonics: str) -> TONWallet:
     """Get or create wallet instance"""
     global _wallet_instance
